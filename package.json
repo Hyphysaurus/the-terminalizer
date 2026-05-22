@@ -3,9 +3,30 @@
   "version": "1.0.0",
   "description": "Randomize, preview, and hot-swap your Windows Terminal themes. 515+ themes, favorites, auto-shuffle, opacity control.",
   "main": "server.js",
+  "bin": {
+    "the-terminalizer": "server.js"
+  },
   "scripts": {
     "start": "node server.js"
   },
-  "keywords": ["windows-terminal", "themes", "color-schemes", "terminal", "customization"],
-  "license": "MIT"
+  "keywords": [
+    "windows-terminal",
+    "themes",
+    "color-schemes",
+    "terminal",
+    "customization",
+    "randomizer"
+  ],
+  "author": "Hyphysaurus",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Hyphysaurus/the-terminalizer.git"
+  },
+  "engines": {
+    "node": ">=14"
+  },
+  "files": [
+    "server.js"
+  ]
 }

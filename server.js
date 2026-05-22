@@ -1,15 +1,35 @@
+#!/usr/bin/env node
 const http = require("http");
 const https = require("https");
 const fs = require("fs");
 const path = require("path");
+const os = require("os");
 
-const SETTINGS_PATH = path.join(
-  "/mnt/c/Users/maram/AppData/Local/Packages",
-  "Microsoft.WindowsTerminal_8wekyb3d8bbwe/LocalState/settings.json"
-);
-const FAVORITES_PATH = path.join(__dirname, "favorites.json");
-const CACHE_PATH = path.join(__dirname, "themes-cache.json");
-const PORT = 3456;
+function findSettingsPath() {
+  const pkg = "Microsoft.WindowsTerminal_8wekyb3d8bbwe/LocalState/settings.json";
+  // Native Windows
+  if (process.platform === "win32") {
+    const localAppData = process.env.LOCALAPPDATA || path.join(os.homedir(), "AppData", "Local");
+    return path.join(localAppData, "Packages", pkg);
+  }
+  // WSL — detect Windows user from /mnt/c/Users
+  try {
+    const users = fs.readdirSync("/mnt/c/Users").filter((u) =>
+      !["Default", "Public", "Default User", "All Users"].includes(u) &&
+      fs.existsSync(path.join("/mnt/c/Users", u, "AppData/Local/Packages", pkg))
+    );
+    if (users.length > 0) return path.join("/mnt/c/Users", users[0], "AppData/Local/Packages", pkg);
+  } catch {}
+  console.error("Could not find Windows Terminal settings.json. Set TERMINAL_SETTINGS_PATH env var.");
+  process.exit(1);
+}
+
+const SETTINGS_PATH = process.env.TERMINAL_SETTINGS_PATH || findSettingsPath();
+const DATA_DIR = path.join(os.homedir(), ".terminalizer");
+if (!fs.existsSync(DATA_DIR)) fs.mkdirSync(DATA_DIR, { recursive: true });
+const FAVORITES_PATH = path.join(DATA_DIR, "favorites.json");
+const CACHE_PATH = path.join(DATA_DIR, "themes-cache.json");
+const PORT = process.env.PORT || 3456;
 
 // --- Favorites ---
 function loadFavorites() {
