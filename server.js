@@ -137,48 +137,61 @@ const HTML = `<!DOCTYPE html>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>The Terminalizer</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
   <style>
     * { margin: 0; padding: 0; box-sizing: border-box; }
     body {
       min-height: 100vh;
-      font-family: 'Segoe UI', system-ui, sans-serif;
+      font-family: 'Inter', -apple-system, system-ui, sans-serif;
       background: #0d0d1a;
       color: #e0e0e0;
+      -webkit-font-smoothing: antialiased;
+      -moz-osx-font-smoothing: grayscale;
     }
     .app {
       max-width: 900px;
       margin: 0 auto;
-      padding: 2rem 1.5rem 4rem;
+      padding: 2.5rem 1.5rem 4rem;
     }
     header {
       text-align: center;
-      margin-bottom: 2rem;
+      margin-bottom: 2.5rem;
     }
-    h1 { font-size: 1.5rem; color: #fff; margin-bottom: 0.3rem; }
-    .subtitle { font-size: 0.85rem; color: #666; }
+    h1 {
+      font-size: 1.6rem; color: #fff; margin-bottom: 0.35rem;
+      font-weight: 700; letter-spacing: -0.02em;
+    }
+    .subtitle { font-size: 0.82rem; color: #555; font-weight: 400; letter-spacing: 0.01em; }
 
     /* Terminal Preview */
     .terminal-preview {
-      border-radius: 12px;
+      border-radius: 14px;
       overflow: hidden;
-      margin-bottom: 1.5rem;
+      margin-bottom: 1.75rem;
       border: 1px solid #2a2a4a;
       font-family: 'JetBrains Mono', 'Cascadia Code', 'Fira Code', monospace;
       font-size: 0.82rem;
-      line-height: 1.5;
-      transition: all 0.3s ease;
+      line-height: 1.6;
+      transition: all 0.35s ease;
+      box-shadow: 0 8px 32px rgba(0,0,0,0.3);
     }
     .terminal-titlebar {
-      padding: 0.5rem 1rem;
+      padding: 0.6rem 1rem;
       display: flex;
       align-items: center;
-      gap: 6px;
+      gap: 7px;
     }
     .terminal-dot {
-      width: 10px; height: 10px; border-radius: 50%;
+      width: 11px; height: 11px; border-radius: 50%;
+      box-shadow: inset 0 -1px 2px rgba(0,0,0,0.2);
     }
-    .terminal-titlebar span { margin-left: auto; font-size: 0.7rem; opacity: 0.5; }
-    .terminal-body { padding: 1rem 1.2rem; }
+    .terminal-titlebar span {
+      margin-left: auto; font-size: 0.68rem; opacity: 0.4;
+      font-family: 'Inter', system-ui, sans-serif; font-weight: 500;
+    }
+    .terminal-body { padding: 1rem 1.3rem; }
     .terminal-body .line { white-space: pre; }
 
     /* Controls row */
@@ -187,79 +200,94 @@ const HTML = `<!DOCTYPE html>
       gap: 10px;
       align-items: center;
       justify-content: center;
-      margin-bottom: 2rem;
+      margin-bottom: 1.75rem;
       flex-wrap: wrap;
     }
     .btn {
       border: 1px solid #2a2a4a;
-      border-radius: 10px;
-      padding: 0.65rem 1.3rem;
-      font-size: 0.85rem;
+      border-radius: 12px;
+      padding: 0.6rem 1.4rem;
+      font-size: 0.8rem;
       font-weight: 600;
       cursor: pointer;
-      transition: all 0.15s;
-      font-family: inherit;
+      transition: all 0.2s ease;
+      font-family: 'Inter', system-ui, sans-serif;
+      letter-spacing: 0.01em;
+      user-select: none;
     }
+    .btn:active { transform: scale(0.97); }
     .btn-primary {
       background: linear-gradient(135deg, #7aa2f7, #bb9af7);
       color: #1a1b26;
       border: none;
+      box-shadow: 0 2px 8px rgba(122,162,247,0.2);
     }
     .btn-primary:hover {
       transform: translateY(-2px);
-      box-shadow: 0 6px 20px rgba(122,162,247,0.3);
+      box-shadow: 0 8px 24px rgba(122,162,247,0.3);
+      filter: brightness(1.05);
     }
+    .btn-primary:active { transform: translateY(0) scale(0.97); }
     .btn-secondary {
-      background: #1a1a2e;
-      color: #ccc;
+      background: #15152a;
+      color: #9a9ab0;
     }
-    .btn-secondary:hover { border-color: #7aa2f7; color: #fff; }
+    .btn-secondary:hover { border-color: #7aa2f7; color: #e0e0e0; background: #1a1a32; }
     .btn-secondary.active {
       border-color: #bb9af7;
       color: #bb9af7;
-      background: #1e1e35;
+      background: #1c1c38;
+      box-shadow: 0 0 12px rgba(187,154,247,0.15);
     }
 
     /* Font size */
     .font-controls {
       display: flex;
       align-items: center;
-      gap: 6px;
+      gap: 5px;
       margin-left: auto;
     }
     .font-controls label {
-      font-size: 0.7rem; color: #555; text-transform: uppercase; letter-spacing: 0.08em;
+      font-size: 0.65rem; color: #4a4a65; text-transform: uppercase;
+      letter-spacing: 0.1em; font-weight: 600; margin-right: 2px;
     }
     .size-btn {
-      background: #1a1a2e; border: 1px solid #2a2a4a; color: #ccc;
-      width: 30px; height: 30px; border-radius: 7px; cursor: pointer;
+      background: #15152a; border: 1px solid #2a2a4a; color: #9a9ab0;
+      width: 28px; height: 28px; border-radius: 8px; cursor: pointer;
       display: flex; align-items: center; justify-content: center;
-      font-size: 1rem; transition: all 0.15s;
+      font-size: 0.9rem; font-weight: 500; transition: all 0.2s ease;
+      font-family: 'Inter', system-ui, sans-serif;
     }
-    .size-btn:hover { border-color: #7aa2f7; color: #fff; }
-    .size-display { font-size: 0.85rem; color: #fff; min-width: 24px; text-align: center; }
+    .size-btn:hover { border-color: #7aa2f7; color: #fff; background: #1a1a32; }
+    .size-btn:active { transform: scale(0.92); }
+    .size-display {
+      font-size: 0.8rem; color: #e0e0e0; min-width: 24px; text-align: center;
+      font-weight: 600; font-variant-numeric: tabular-nums;
+    }
 
     /* Shuffle controls */
     .shuffle-row {
       display: flex; align-items: center; gap: 8px;
     }
     .shuffle-select {
-      background: #1a1a2e; border: 1px solid #2a2a4a; color: #ccc;
-      padding: 0.45rem 0.6rem; border-radius: 7px; font-size: 0.8rem;
-      font-family: inherit; cursor: pointer;
+      background: #15152a; border: 1px solid #2a2a4a; color: #9a9ab0;
+      padding: 0.45rem 0.65rem; border-radius: 10px; font-size: 0.78rem;
+      font-family: 'Inter', system-ui, sans-serif; cursor: pointer;
+      font-weight: 500; transition: all 0.2s ease;
     }
+    .shuffle-select:hover { border-color: #3a3a6a; color: #ccc; }
     .shuffle-select:focus { outline: none; border-color: #7aa2f7; }
 
     /* Opacity slider */
     .slider-row {
-      display: flex; align-items: center; gap: 8px;
-      background: #13131f; border: 1px solid #1e1e35;
-      border-radius: 10px; padding: 0.6rem 1rem;
-      margin-bottom: 1.5rem;
+      display: flex; align-items: center; gap: 10px;
+      background: #111120; border: 1px solid #1e1e35;
+      border-radius: 12px; padding: 0.6rem 1.1rem;
+      margin-bottom: 1.75rem;
     }
     .slider-row label {
-      font-size: 0.7rem; color: #555; text-transform: uppercase;
-      letter-spacing: 0.08em; flex-shrink: 0;
+      font-size: 0.65rem; color: #4a4a65; text-transform: uppercase;
+      letter-spacing: 0.1em; flex-shrink: 0; font-weight: 600;
     }
     .slider-row input[type=range] {
       flex: 1; -webkit-appearance: none; appearance: none;
@@ -268,45 +296,64 @@ const HTML = `<!DOCTYPE html>
     .slider-row input[type=range]::-webkit-slider-thumb {
       -webkit-appearance: none; width: 16px; height: 16px;
       border-radius: 50%; background: linear-gradient(135deg, #7aa2f7, #bb9af7);
-      cursor: pointer; border: none;
+      cursor: pointer; border: 2px solid #0d0d1a;
+      box-shadow: 0 0 8px rgba(122,162,247,0.3);
     }
     .slider-row .slider-value {
-      font-size: 0.8rem; color: #fff; min-width: 36px; text-align: right;
+      font-size: 0.78rem; color: #c0caf5; min-width: 36px; text-align: right;
+      font-weight: 600; font-variant-numeric: tabular-nums;
     }
 
     /* Tabs */
     .tabs {
-      display: flex; gap: 4px; margin-bottom: 1rem;
-      border-bottom: 1px solid #1e1e35;
+      display: flex; gap: 2px; margin-bottom: 1.1rem;
+      border-bottom: 1px solid #1a1a30;
       padding-bottom: 0;
     }
     .tab {
-      background: none; border: none; color: #555; padding: 0.6rem 1rem;
-      font-size: 0.8rem; cursor: pointer; font-family: inherit;
-      border-bottom: 2px solid transparent; transition: all 0.15s;
+      background: none; border: none; color: #4a4a65; padding: 0.65rem 1.1rem;
+      font-size: 0.78rem; cursor: pointer; font-family: 'Inter', system-ui, sans-serif;
+      font-weight: 500; border-bottom: 2px solid transparent; transition: all 0.2s ease;
     }
-    .tab:hover { color: #aaa; }
-    .tab.active { color: #c0caf5; border-bottom-color: #7aa2f7; }
+    .tab:hover { color: #9a9ab0; }
+    .tab.active { color: #e0e0e0; border-bottom-color: #7aa2f7; }
     .tab .count {
-      background: #2a2a4a; color: #888; font-size: 0.65rem;
-      padding: 1px 6px; border-radius: 8px; margin-left: 5px;
+      background: #1a1a30; color: #555; font-size: 0.6rem;
+      padding: 2px 7px; border-radius: 10px; margin-left: 6px;
+      font-weight: 600; font-variant-numeric: tabular-nums;
     }
-    .tab.active .count { background: #2d3566; color: #7aa2f7; }
+    .tab.active .count { background: #1e2550; color: #7aa2f7; }
 
-    /* Search */
+    /* Search + filters */
+    .search-row {
+      display: flex; gap: 8px; align-items: center; margin-bottom: 1rem;
+    }
     .search-bar {
-      width: 100%;
-      background: #12121f;
+      flex: 1;
+      background: #111120;
       border: 1px solid #2a2a4a;
       color: #e0e0e0;
       padding: 0.6rem 1rem;
-      border-radius: 10px;
-      font-size: 0.85rem;
-      margin-bottom: 1rem;
-      font-family: inherit;
+      border-radius: 12px;
+      font-size: 0.82rem;
+      font-family: 'Inter', system-ui, sans-serif;
+      font-weight: 400;
+      transition: border-color 0.2s ease, box-shadow 0.2s ease;
     }
-    .search-bar:focus { outline: none; border-color: #7aa2f7; }
-    .search-bar::placeholder { color: #444; }
+    .search-bar:focus {
+      outline: none; border-color: #7aa2f7;
+      box-shadow: 0 0 0 3px rgba(122,162,247,0.1);
+    }
+    .search-bar::placeholder { color: #3a3a55; }
+    .filter-pills { display: flex; gap: 4px; flex-shrink: 0; }
+    .filter-pill {
+      background: #15152a; border: 1px solid #2a2a4a; color: #4a4a65;
+      padding: 0.45rem 0.8rem; border-radius: 10px; font-size: 0.72rem;
+      cursor: pointer; font-family: 'Inter', system-ui, sans-serif;
+      font-weight: 600; transition: all 0.2s ease; letter-spacing: 0.02em;
+    }
+    .filter-pill:hover { color: #9a9ab0; border-color: #3a3a6a; }
+    .filter-pill.active { background: #1c1c38; color: #c0caf5; border-color: #7aa2f7; }
 
     /* Scheme grid */
     .scheme-grid {
@@ -322,47 +369,69 @@ const HTML = `<!DOCTYPE html>
     .scheme-grid::-webkit-scrollbar-thumb { background: #2a2a4a; border-radius: 4px; }
 
     .scheme-card {
-      background: #13131f;
-      border: 1px solid #1e1e35;
-      border-radius: 10px;
-      padding: 0.7rem 0.9rem;
+      border: 2px solid rgba(255,255,255,0.06);
+      border-radius: 12px;
+      padding: 0.6rem 0.85rem;
       cursor: pointer;
-      transition: all 0.15s;
+      transition: all 0.2s ease;
       display: flex;
       align-items: center;
       gap: 10px;
+      position: relative;
     }
-    .scheme-card:hover { border-color: #3a3a6a; background: #18182a; }
-    .scheme-card.active { border-color: #7aa2f7; background: #1a1a35; }
+    .scheme-card:hover {
+      transform: translateY(-2px);
+      box-shadow: 0 6px 16px rgba(0,0,0,0.35);
+      border-color: rgba(255,255,255,0.12);
+    }
+    .scheme-card.active {
+      border-color: #7aa2f7;
+      box-shadow: 0 0 20px rgba(122,162,247,0.3), inset 0 0 24px rgba(122,162,247,0.06);
+    }
+    .scheme-card .active-badge {
+      display: none;
+      position: absolute;
+      top: -7px; right: -7px;
+      background: linear-gradient(135deg, #7aa2f7, #bb9af7);
+      color: #1a1b26;
+      width: 20px; height: 20px;
+      border-radius: 50%;
+      font-size: 0.6rem;
+      line-height: 20px;
+      text-align: center;
+      font-weight: 700;
+      box-shadow: 0 2px 8px rgba(122,162,247,0.4);
+    }
+    .scheme-card.active .active-badge { display: block; }
 
     .scheme-colors {
-      display: flex; gap: 3px; flex-shrink: 0;
+      display: grid; grid-template-columns: repeat(3, 1fr); gap: 3px; flex-shrink: 0;
     }
     .scheme-colors .c {
-      width: 14px; height: 14px; border-radius: 4px;
+      width: 11px; height: 11px; border-radius: 3px;
+      box-shadow: inset 0 0 0 1px rgba(0,0,0,0.15);
     }
     .scheme-name {
-      font-size: 0.78rem; color: #aaa; flex: 1;
+      font-size: 0.76rem; flex: 1; font-weight: 500;
       overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+      letter-spacing: 0.01em;
     }
-    .scheme-card.active .scheme-name { color: #fff; }
-    .scheme-card:hover .scheme-name { color: #ddd; }
 
     .fav-btn {
       background: none; border: none; cursor: pointer;
-      font-size: 0.9rem; padding: 2px; transition: all 0.15s;
-      opacity: 0.3; flex-shrink: 0;
+      font-size: 1rem; padding: 2px; transition: all 0.2s ease;
+      flex-shrink: 0; color: #555; line-height: 1;
     }
-    .fav-btn:hover { opacity: 0.7; transform: scale(1.2); }
-    .fav-btn.favorited { opacity: 1; }
+    .fav-btn:hover { transform: scale(1.25); color: #f0c040; }
+    .fav-btn.favorited { color: #f0c040; text-shadow: 0 0 10px rgba(240,192,64,0.5); }
 
     .install-btn {
-      background: #1e1e35; border: 1px solid #2a2a4a; color: #7aa2f7;
-      font-size: 0.65rem; padding: 3px 8px; border-radius: 5px;
-      cursor: pointer; flex-shrink: 0; font-family: inherit;
-      transition: all 0.15s;
+      background: rgba(122,162,247,0.1); border: 1px solid rgba(122,162,247,0.25); color: #7aa2f7;
+      font-size: 0.68rem; padding: 4px 10px; border-radius: 8px;
+      cursor: pointer; flex-shrink: 0; font-family: 'Inter', system-ui, sans-serif;
+      font-weight: 600; transition: all 0.2s ease;
     }
-    .install-btn:hover { background: #252550; border-color: #7aa2f7; }
+    .install-btn:hover { background: rgba(122,162,247,0.2); border-color: #7aa2f7; }
 
     /* Loading */
     .loading { text-align: center; padding: 2rem; color: #555; font-size: 0.85rem; }
@@ -373,11 +442,15 @@ const HTML = `<!DOCTYPE html>
     .toast {
       position: fixed; bottom: 2rem; left: 50%;
       transform: translateX(-50%) translateY(100px);
-      background: #bb9af7; color: #1a1b26;
-      padding: 0.6rem 1.4rem; border-radius: 10px;
-      font-weight: 600; font-size: 0.8rem;
-      transition: transform 0.3s ease; pointer-events: none;
-      z-index: 100;
+      background: linear-gradient(135deg, #7aa2f7, #bb9af7);
+      color: #1a1b26;
+      padding: 0.6rem 1.6rem; border-radius: 12px;
+      font-weight: 600; font-size: 0.78rem;
+      font-family: 'Inter', system-ui, sans-serif;
+      letter-spacing: 0.01em;
+      transition: transform 0.3s cubic-bezier(0.34, 1.56, 0.64, 1);
+      pointer-events: none; z-index: 100;
+      box-shadow: 0 8px 24px rgba(122,162,247,0.3);
     }
     .toast.show { transform: translateX(-50%) translateY(0); }
   </style>
@@ -403,6 +476,7 @@ const HTML = `<!DOCTYPE html>
   <!-- Controls -->
   <div class="controls">
     <button class="btn btn-primary" onclick="randomize()">Randomize</button>
+    <button class="btn btn-secondary" id="undo-btn" onclick="undoTheme()" style="display:none" title="Go back to previous theme">Undo</button>
     <div class="shuffle-row">
       <button class="btn btn-secondary" id="shuffle-btn" onclick="toggleShuffle()">Auto-shuffle</button>
       <select class="shuffle-select" id="shuffle-interval" onchange="updateShuffle()">
@@ -442,7 +516,14 @@ const HTML = `<!DOCTYPE html>
     </button>
   </div>
 
-  <input class="search-bar" id="search" placeholder="Search themes..." oninput="renderGrid()">
+  <div class="search-row">
+    <input class="search-bar" id="search" placeholder="Search themes..." oninput="renderGrid()">
+    <div class="filter-pills">
+      <button class="filter-pill active" data-filter="all" onclick="setFilter('all')">All</button>
+      <button class="filter-pill" data-filter="dark" onclick="setFilter('dark')">Dark</button>
+      <button class="filter-pill" data-filter="light" onclick="setFilter('light')">Light</button>
+    </div>
+  </div>
 
   <div class="scheme-grid" id="scheme-grid"></div>
 </div>
@@ -454,13 +535,35 @@ const HTML = `<!DOCTYPE html>
   let externalIndex = [];
   let favorites = [];
   let currentScheme = "";
+  let previousScheme = "";
   let currentSize = 13;
   let activeTab = "installed";
+  let activeFilter = "all";
   let shuffleActive = false;
   let shuffleFavsOnly = false;
   let currentOpacity = 95;
   let externalLoaded = false;
   let opacityTimer = null;
+
+  function isLightTheme(s) {
+    if (!s || !s.background) return false;
+    const hex = s.background.replace("#", "");
+    const r = parseInt(hex.substr(0, 2), 16);
+    const g = parseInt(hex.substr(2, 2), 16);
+    const b = parseInt(hex.substr(4, 2), 16);
+    return (r * 299 + g * 587 + b * 114) / 1000 > 128;
+  }
+
+  function filterSchemes(list) {
+    if (activeFilter === "all") return list;
+    return list.filter(s => activeFilter === "light" ? isLightTheme(s) : !isLightTheme(s));
+  }
+
+  function setFilter(f) {
+    activeFilter = f;
+    document.querySelectorAll(".filter-pill").forEach(p => p.classList.toggle("active", p.dataset.filter === f));
+    renderGrid();
+  }
 
   async function fetchState() {
     const res = await fetch("/api/state");
@@ -526,13 +629,13 @@ const HTML = `<!DOCTYPE html>
     let items = [];
 
     if (activeTab === "installed") {
-      items = installedSchemes
+      items = filterSchemes(installedSchemes)
         .filter(s => s.name.toLowerCase().includes(query))
-        .map(s => schemeCard(s, true));
+        .map(s => schemeCard(s));
     } else if (activeTab === "favorites") {
-      items = installedSchemes
+      items = filterSchemes(installedSchemes)
         .filter(s => favorites.includes(s.name) && s.name.toLowerCase().includes(query))
-        .map(s => schemeCard(s, true));
+        .map(s => schemeCard(s));
     } else if (activeTab === "explore") {
       if (!externalLoaded) {
         grid.innerHTML = '<div class="loading"><span class="spinner"></span>Loading 515+ themes from GitHub...</div>';
@@ -548,14 +651,17 @@ const HTML = `<!DOCTYPE html>
     grid.innerHTML = items.join("");
   }
 
-  function schemeCard(s, installed) {
+  function schemeCard(s) {
     const isActive = s.name === currentScheme ? " active" : "";
     const isFav = favorites.includes(s.name);
     const safeName = s.name.replace(/'/g, "\\\\'");
     const colors = [s.red, s.green, s.blue, s.yellow, s.purple, s.cyan].filter(Boolean);
-    return '<div class="scheme-card' + isActive + '" onclick="pickScheme(\\'' + safeName + '\\')">' +
+    const bg = s.background || "#13131f";
+    const fg = s.foreground || "#ccc";
+    return '<div class="scheme-card' + isActive + '" style="background:' + bg + ';" onclick="pickScheme(\\'' + safeName + '\\')">' +
+      '<div class="active-badge">&#10003;</div>' +
       '<div class="scheme-colors">' + colors.map(c => '<div class="c" style="background:' + c + '"></div>').join("") + '</div>' +
-      '<div class="scheme-name">' + s.name + '</div>' +
+      '<div class="scheme-name" style="color:' + fg + '">' + s.name + '</div>' +
       '<button class="fav-btn' + (isFav ? ' favorited' : '') + '" onclick="event.stopPropagation();toggleFav(\\'' + safeName + '\\')">' +
       (isFav ? "&#9733;" : "&#9734;") + '</button></div>';
   }
@@ -576,16 +682,23 @@ const HTML = `<!DOCTYPE html>
     renderGrid();
   }
 
+  function updateUndoBtn() {
+    document.getElementById("undo-btn").style.display = previousScheme ? "inline-block" : "none";
+  }
+
   async function randomize() {
+    previousScheme = currentScheme;
     const res = await fetch("/api/randomize", { method: "POST" });
     const data = await res.json();
     currentScheme = data.scheme;
+    updateUndoBtn();
     const existing = installedSchemes.find(s => s.name === data.scheme);
     if (existing) { renderPreview(); renderGrid(); }
     showToast("Switched to " + data.scheme);
   }
 
   async function pickScheme(name) {
+    previousScheme = currentScheme;
     const res = await fetch("/api/set-scheme", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
@@ -593,9 +706,18 @@ const HTML = `<!DOCTYPE html>
     });
     const data = await res.json();
     currentScheme = data.scheme;
+    updateUndoBtn();
     renderPreview();
     renderGrid();
     showToast(data.scheme);
+  }
+
+  async function undoTheme() {
+    if (!previousScheme) return;
+    const temp = currentScheme;
+    await pickScheme(previousScheme);
+    previousScheme = temp;
+    updateUndoBtn();
   }
 
   async function toggleFav(name) {
