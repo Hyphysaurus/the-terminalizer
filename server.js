@@ -1741,14 +1741,33 @@ const server = http.createServer(async (req, res) => {
   }
 });
 
+// Open the given URL in the OS default browser (best-effort). Set TERMINALIZER_NO_OPEN to disable.
+function openBrowser(url) {
+  if (process.env.TERMINALIZER_NO_OPEN) return;
+  const { exec } = require("child_process");
+  let cmd;
+  if (process.platform === "win32") cmd = `start "" "${url}"`;
+  else if (process.platform === "darwin") cmd = `open "${url}"`;
+  else {
+    let wsl = false;
+    try { wsl = fs.readFileSync("/proc/version", "utf-8").toLowerCase().includes("microsoft"); } catch {}
+    cmd = wsl ? `cmd.exe /c start "" "${url}"` : `xdg-open "${url}"`; // WSL -> Windows default browser
+  }
+  exec(cmd, () => {}); // ignore errors; the URL is printed regardless
+}
+
+const URL_STR = `http://localhost:${PORT}`;
 server.on("error", (e) => {
   if (e.code === "EADDRINUSE") {
-    console.error(`Port ${PORT} is already in use. Pick another: PORT=8080 the-terminalizer`);
+    console.error(`Port ${PORT} is already in use — opening ${URL_STR} (it may already be running).`);
+    console.error(`For a separate instance: PORT=8080 the-terminalizer`);
+    openBrowser(URL_STR); // likely our own instance — just open it
   } else {
     console.error("Server error:", e.message);
   }
   process.exit(1);
 });
 server.listen(PORT, HOST, () => {
-  console.log(`The Terminalizer running at http://localhost:${PORT}`);
+  console.log(`The Terminalizer running at ${URL_STR}`);
+  openBrowser(URL_STR);
 });

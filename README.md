@@ -44,7 +44,7 @@ npm install -g the-terminalizer
 the-terminalizer
 ```
 
-Then open **http://localhost:3456** in your browser.
+It opens **http://localhost:3456** in your browser automatically (set `TERMINALIZER_NO_OPEN=1` to disable).
 
 ## Requirements
 
@@ -64,6 +64,12 @@ Change the port:
 
 ```bash
 PORT=8080 the-terminalizer
+```
+
+Don't auto-open the browser:
+
+```bash
+TERMINALIZER_NO_OPEN=1 the-terminalizer
 ```
 
 ## How It Works

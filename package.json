@@ -1,6 +1,6 @@
 {
   "name": "the-terminalizer",
-  "version": "1.2.0",
+  "version": "1.2.1",
   "description": "Randomize, preview, and hot-swap your Windows Terminal themes. 515+ themes, favorites, auto-shuffle, opacity control.",
   "main": "server.js",
   "bin": {
