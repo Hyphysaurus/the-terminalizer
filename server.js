@@ -6,21 +6,27 @@ const path = require("path");
 const os = require("os");
 
 function findSettingsPath() {
-  const pkg = "Microsoft.WindowsTerminal_8wekyb3d8bbwe/LocalState/settings.json";
+  // Stable Store build, Preview Store build, and unpackaged (winget/zip) install — in priority order.
+  const rels = [
+    "AppData/Local/Packages/Microsoft.WindowsTerminal_8wekyb3d8bbwe/LocalState/settings.json",
+    "AppData/Local/Packages/Microsoft.WindowsTerminalPreview_8wekyb3d8bbwe/LocalState/settings.json",
+    "AppData/Local/Microsoft/Windows Terminal/settings.json",
+  ];
   // Native Windows
   if (process.platform === "win32") {
-    const localAppData = process.env.LOCALAPPDATA || path.join(os.homedir(), "AppData", "Local");
-    return path.join(localAppData, "Packages", pkg);
+    const home = os.homedir();
+    for (const r of rels) { const p = path.join(home, r); if (fs.existsSync(p)) return p; }
+    return path.join(home, rels[0]);
   }
-  // WSL — detect Windows user from /mnt/c/Users
+  // WSL — detect the Windows user under /mnt/c/Users
   try {
-    const users = fs.readdirSync("/mnt/c/Users").filter((u) =>
-      !["Default", "Public", "Default User", "All Users"].includes(u) &&
-      fs.existsSync(path.join("/mnt/c/Users", u, "AppData/Local/Packages", pkg))
-    );
-    if (users.length > 0) return path.join("/mnt/c/Users", users[0], "AppData/Local/Packages", pkg);
+    const base = "/mnt/c/Users";
+    for (const u of fs.readdirSync(base)) {
+      if (["Default", "Public", "Default User", "All Users"].includes(u)) continue;
+      for (const r of rels) { const p = path.join(base, u, r); if (fs.existsSync(p)) return p; }
+    }
   } catch {}
-  console.error("Could not find Windows Terminal settings.json. Set TERMINAL_SETTINGS_PATH env var.");
+  console.error("Could not find Windows Terminal settings.json. Set TERMINAL_SETTINGS_PATH to its location.");
   process.exit(1);
 }
 
@@ -73,24 +79,204 @@ function readSettings() {
   return parseJsonc(fs.readFileSync(SETTINGS_PATH, "utf-8"));
 }
 
-function writeSettings(settings) {
-  // Back up the user's original config once, before we ever touch it.
+function readRaw() { return fs.readFileSync(SETTINGS_PATH, "utf-8"); }
+
+function backupOnce() {
   try {
     if (!fs.existsSync(BACKUP_PATH) && fs.existsSync(SETTINGS_PATH)) {
       fs.copyFileSync(SETTINGS_PATH, BACKUP_PATH);
     }
   } catch {}
-  // Atomic write: write to a temp file in the same dir, then rename over the target,
-  // so a crash mid-write can never leave a corrupted settings.json.
+}
+
+// Atomic write: temp file in the same dir, then rename over the target,
+// so a crash mid-write can never leave a corrupted settings.json.
+function atomicWrite(text) {
   const tmp = SETTINGS_PATH + ".terminalizer.tmp";
-  fs.writeFileSync(tmp, JSON.stringify(settings, null, 4), "utf-8");
+  fs.writeFileSync(tmp, text, "utf-8");
   fs.renameSync(tmp, SETTINGS_PATH);
 }
+
+// Write raw edited text, but only after confirming it still parses. Throws otherwise.
+function commitRaw(text) {
+  parseJsonc(text); // validate — throws if the surgical edit produced invalid JSON
+  backupOnce();
+  atomicWrite(text);
+}
+
+// Full re-serialize (loses JSONC comments). Safe fallback + used for opt-in bulk edits.
+function writeSettings(settings) {
+  backupOnce();
+  atomicWrite(JSON.stringify(settings, null, 4));
+}
+
+function ensureDefaults(s) {
+  if (!s.profiles) s.profiles = {};
+  if (!s.profiles.defaults) s.profiles.defaults = {};
+  return s;
+}
+
+/* ---- Comment-preserving surgical JSONC editing ----
+   These edit the raw settings text in place so user comments/formatting survive.
+   Every public helper validates the result (commitRaw re-parses) and returns false
+   on any doubt, so callers fall back to the full re-serialize path. */
+function scanString(text, i) { // i at opening quote -> index just past closing quote
+  for (i++; i < text.length; i++) {
+    if (text[i] === "\\") i++;
+    else if (text[i] === '"') return i + 1;
+  }
+  return -1;
+}
+function matchBracket(text, i) { // i at { or [ -> index just past matching } or ]
+  const open = text[i], close = open === "{" ? "}" : "]";
+  let depth = 0, inStr = false, inLine = false, inBlock = false;
+  for (; i < text.length; i++) {
+    const c = text[i], n = text[i + 1];
+    if (inLine) { if (c === "\n") inLine = false; continue; }
+    if (inBlock) { if (c === "*" && n === "/") { inBlock = false; i++; } continue; }
+    if (inStr) { if (c === "\\") i++; else if (c === '"') inStr = false; continue; }
+    if (c === '"') { inStr = true; continue; }
+    if (c === "/" && n === "/") { inLine = true; i++; continue; }
+    if (c === "/" && n === "*") { inBlock = true; i++; continue; }
+    if (c === open) depth++;
+    else if (c === close) { depth--; if (depth === 0) return i + 1; }
+  }
+  return -1;
+}
+function skipWs(text, k) {
+  for (;;) {
+    while (k < text.length && /\s/.test(text[k])) k++;
+    if (text[k] === "/" && text[k + 1] === "/") { while (k < text.length && text[k] !== "\n") k++; continue; }
+    if (text[k] === "/" && text[k + 1] === "*") { k += 2; while (k < text.length && !(text[k] === "*" && text[k + 1] === "/")) k++; k += 2; continue; }
+    return k;
+  }
+}
+// Index of the opening quote of `key` at the top level of the object at objStart..objEnd, or -1.
+function findKeyInObject(text, objStart, objEnd, key) {
+  const target = '"' + key + '"';
+  for (let i = objStart + 1; i < objEnd; i++) {
+    const c = text[i], n = text[i + 1];
+    if (c === "/" && n === "/") { while (i < objEnd && text[i] !== "\n") i++; continue; }
+    if (c === "/" && n === "*") { i += 2; while (i < objEnd && !(text[i] === "*" && text[i + 1] === "/")) i++; i++; continue; }
+    if (c === "{" || c === "[") { const e = matchBracket(text, i); if (e > 0) { i = e - 1; continue; } }
+    if (c === '"') {
+      if (text.startsWith(target, i) && text[skipWs(text, scanString(text, i))] === ":") return i;
+      const e = scanString(text, i); if (e > 0) { i = e - 1; continue; }
+    }
+  }
+  return -1;
+}
+function valueStart(text, keyQuoteIdx) { // -> index of first significant char of the value
+  const k = skipWs(text, scanString(text, keyQuoteIdx));
+  if (text[k] !== ":") return -1;
+  return skipWs(text, k + 1);
+}
+function scalarEnd(text, i) { // end of a string or scalar value beginning at i
+  if (text[i] === '"') return scanString(text, i);
+  while (i < text.length && !/[,}\]\s]/.test(text[i]) && text[i] !== "/") i++;
+  return i;
+}
+function indentOf(text, idx) {
+  let s = text.lastIndexOf("\n", idx) + 1, ind = "";
+  while (s < text.length && (text[s] === " " || text[s] === "\t")) { ind += text[s]; s++; }
+  return ind;
+}
+// Walk a path of object keys (e.g. ["profiles","defaults"]) -> {start,end} of the leaf object braces.
+function childObject(text, start, end, pathKeys) {
+  for (const key of pathKeys) {
+    const ki = findKeyInObject(text, start, end, key);
+    if (ki < 0) return null;
+    const vs = valueStart(text, ki);
+    if (text[vs] !== "{") return null;
+    const ve = matchBracket(text, vs);
+    if (ve < 0) return null;
+    start = vs; end = ve;
+  }
+  return { start, end };
+}
+function withRoot(text) {
+  const rs = text.indexOf("{");
+  const re = rs < 0 ? -1 : matchBracket(text, rs);
+  if (rs < 0 || re < 0) throw new Error("bad root");
+  return { rs, re };
+}
+// Replace `key`'s value with `literal` in the object at objStart..objEnd, or insert it.
+function setKeyRaw(text, objStart, objEnd, key, literal) {
+  const ki = findKeyInObject(text, objStart, objEnd, key);
+  if (ki >= 0) {
+    const vs = valueStart(text, ki);
+    return text.slice(0, vs) + literal + text.slice(scalarEnd(text, vs));
+  }
+  const ins = "\n" + indentOf(text, objStart) + '    "' + key + '": ' + literal + ",";
+  return text.slice(0, objStart + 1) + ins + text.slice(objStart + 1);
+}
+
+// Public: set scalar keys on profiles.defaults, preserving comments. Returns success.
+function surgicalSetDefaults(pairs) {
+  try {
+    let text = readRaw();
+    for (const [k, v] of Object.entries(pairs)) {
+      const { rs, re } = withRoot(text);
+      const def = childObject(text, rs, re, ["profiles", "defaults"]);
+      if (!def) return false;
+      text = setKeyRaw(text, def.start, def.end, k, JSON.stringify(v));
+    }
+    commitRaw(text);
+    return true;
+  } catch { return false; }
+}
+function surgicalSetFontSize(size) {
+  try {
+    let text = readRaw();
+    const { rs, re } = withRoot(text);
+    const def = childObject(text, rs, re, ["profiles", "defaults"]);
+    if (!def) return false;
+    const fk = findKeyInObject(text, def.start, def.end, "font");
+    if (fk >= 0) {
+      const fv = valueStart(text, fk);
+      if (text[fv] === "{") {
+        text = setKeyRaw(text, fv, matchBracket(text, fv), "size", String(size));
+      } else if (text[fv] === '"') {
+        const fe = scanString(text, fv);
+        text = text.slice(0, fv) + '{ "face": ' + text.slice(fv, fe) + ', "size": ' + size + " }" + text.slice(fe);
+      } else return false;
+    } else {
+      text = setKeyRaw(text, def.start, def.end, "font", '{ "size": ' + size + " }");
+    }
+    commitRaw(text);
+    return true;
+  } catch { return false; }
+}
+function surgicalPushScheme(schemeObj) {
+  try {
+    let text = readRaw();
+    const { rs, re } = withRoot(text);
+    const sk = findKeyInObject(text, rs, re, "schemes");
+    if (sk < 0) return false;
+    const vs = valueStart(text, sk);
+    if (text[vs] !== "[") return false;
+    const ve = matchBracket(text, vs);
+    let j = ve - 2; // last significant char before the closing ]
+    while (j > vs && /\s/.test(text[j])) j--;
+    // Need a separator only if the previous element isn't already followed by a comma
+    // (an existing trailing comma) and the array isn't empty.
+    const last = text[j];
+    const needComma = last !== "[" && last !== ",";
+    const serialized = JSON.stringify(schemeObj, null, 4).split("\n").map((l, idx) => idx === 0 ? l : "        " + l).join("\n");
+    const insertAt = j + 1;
+    text = text.slice(0, insertAt) + (needComma ? "," : "") + "\n        " + serialized + text.slice(insertAt);
+    commitRaw(text);
+    return true;
+  } catch { return false; }
+}
+function getDefaults(settings) {
+  return (settings.profiles && settings.profiles.defaults) || {};
+}
 function getCurrentScheme(settings) {
-  return settings.profiles.defaults.colorScheme || "Tokyo Night";
+  return getDefaults(settings).colorScheme || "Tokyo Night";
 }
 function getFont(settings) {
-  return settings.profiles.defaults.font || { face: "JetBrainsMono Nerd Font", size: 13, weight: "normal" };
+  return getDefaults(settings).font || { face: "JetBrainsMono Nerd Font", size: 13, weight: "normal" };
 }
 
 // Standard Windows Terminal color-scheme keys (16 ANSI + surfaces). Used to slim schemes
@@ -142,16 +328,39 @@ async function fetchExternalTheme(url) {
   return JSON.parse(res.data);
 }
 
+// --- Apply a color scheme (comment-preserving when possible) ---
+let applyAllProfiles = false;
+
+function applyColorScheme(name) {
+  if (applyAllProfiles) {
+    const s = ensureDefaults(readSettings());
+    s.profiles.defaults.colorScheme = name;
+    if (Array.isArray(s.profiles.list)) {
+      s.profiles.list.forEach((p) => { if (p && typeof p === "object") p.colorScheme = name; });
+    }
+    writeSettings(s); // full path (comments lost) — opt-in bulk action
+    return;
+  }
+  if (surgicalSetDefaults({ colorScheme: name })) return;
+  const s = ensureDefaults(readSettings());
+  s.profiles.defaults.colorScheme = name;
+  writeSettings(s);
+}
+
 // --- Auto-shuffle ---
 let shuffleInterval = null;
 let shuffleMs = 0;
 let shuffleFavsOnly = false;
+let lastShuffleActivity = 0;
 
 function startShuffle(ms, favsOnly = false) {
   stopShuffle();
   shuffleMs = ms;
   shuffleFavsOnly = favsOnly;
+  lastShuffleActivity = Date.now();
   shuffleInterval = setInterval(() => {
+    // Auto-stop if the UI has gone quiet (tab closed) so we don't rewrite settings.json forever.
+    if (Date.now() - lastShuffleActivity > 60000) { stopShuffle(); return; }
     const settings = readSettings();
     const current = getCurrentScheme(settings);
     let pool;
@@ -162,9 +371,7 @@ function startShuffle(ms, favsOnly = false) {
       pool = settings.schemes.map((s) => s.name).filter((n) => n !== current);
     }
     if (pool.length === 0) return;
-    const pick = pool[Math.floor(Math.random() * pool.length)];
-    settings.profiles.defaults.colorScheme = pick;
-    writeSettings(settings);
+    applyColorScheme(pool[Math.floor(Math.random() * pool.length)]);
   }, ms);
 }
 
@@ -375,6 +582,22 @@ const HTML = `<!DOCTYPE html>
       background: linear-gradient(158deg, rgba(255,255,255,0.20) 0%, rgba(255,255,255,0.06) 20%, transparent 42%);
     }
     .terminal-titlebar, .terminal-body, .palette-strip { position: relative; z-index: 1; }
+    /* subtle CRT scanlines + flicker on the "screen" */
+    .terminal-preview::before {
+      content: ''; position: absolute; inset: 0; pointer-events: none; z-index: 3;
+      background: repeating-linear-gradient(rgba(0,0,0,0) 0 2px, rgba(0,0,0,0.045) 2px 3px);
+      animation: crt-flicker 4s steps(40) infinite;
+    }
+    @keyframes crt-flicker { 0%,100%{opacity:.55} 47%{opacity:.72} 49%{opacity:.4} 51%{opacity:.66} 53%{opacity:.5} }
+    @media (prefers-reduced-motion: reduce) { .terminal-preview::before { animation: none; } }
+
+    /* cursor/selection color swatches */
+    .color-input {
+      width: 30px; height: 24px; border-radius: 7px; cursor: pointer; padding: 2px;
+      border: 1px solid var(--glass-border); background: var(--surface);
+    }
+    .color-input::-webkit-color-swatch { border: none; border-radius: 4px; }
+    .color-input::-webkit-color-swatch-wrapper { padding: 0; }
     .terminal-titlebar {
       padding: 0.6rem 1rem;
       display: flex;
@@ -668,6 +891,15 @@ const HTML = `<!DOCTYPE html>
     /* Loading */
     .loading { text-align: center; padding: 2rem; color: var(--text-ghost); font-size: 0.85rem; }
     .spinner { display: inline-block; width: 16px; height: 16px; border: 2px solid var(--border); border-top-color: var(--accent); border-radius: 50%; animation: spin 0.6s linear infinite; margin-right: 8px; vertical-align: middle; }
+    /* Daft Punk pyramid loader */
+    .pyramid {
+      display: inline-block; width: 0; height: 0; vertical-align: middle; margin-right: 10px;
+      border-left: 8px solid transparent; border-right: 8px solid transparent;
+      border-bottom: 14px solid var(--accent);
+      filter: drop-shadow(0 0 6px var(--accent));
+      animation: pyramid-pulse 1.2s ease-in-out infinite;
+    }
+    @keyframes pyramid-pulse { 0%,100%{ opacity:.4; transform:scale(.85); } 50%{ opacity:1; transform:scale(1.12); } }
     @keyframes spin { to { transform: rotate(360deg); } }
 
     /* Toast */
@@ -687,7 +919,14 @@ const HTML = `<!DOCTYPE html>
       pointer-events: none; z-index: 100;
       box-shadow: 0 8px 24px rgba(122,162,247,0.3);
     }
-    .toast.show { transform: translateX(-50%) translateY(0); }
+    .toast.show { transform: translateX(-50%) translateY(0); animation: toast-glitch 0.32s steps(3) 1; }
+    @keyframes toast-glitch {
+      0%   { clip-path: inset(0 0 62% 0); transform: translateX(-53%) translateY(0); }
+      30%  { clip-path: inset(45% 0 0 0); transform: translateX(-47%) translateY(0); }
+      60%  { clip-path: inset(0 0 22% 0); transform: translateX(-50%) translateY(0); }
+      100% { clip-path: inset(0 0 0 0);   transform: translateX(-50%) translateY(0); }
+    }
+    @media (prefers-reduced-motion: reduce) { .toast.show { animation: none; } }
   </style>
 </head>
 <body>
@@ -761,6 +1000,18 @@ const HTML = `<!DOCTYPE html>
     <span class="slider-value" id="opacity-value">95%</span>
   </div>
 
+  <!-- Cursor / selection colors + apply-all + export -->
+  <div class="slider-row" style="gap:12px;flex-wrap:wrap">
+    <label>Cursor</label>
+    <input type="color" id="cursor-color" class="color-input" value="#ffffff" onchange="setColor('cursorColor', this.value)" title="Override cursor color">
+    <label>Selection</label>
+    <input type="color" id="selection-color" class="color-input" value="#444444" onchange="setColor('selectionBackground', this.value)" title="Override selection color">
+    <button class="btn btn-secondary" id="reset-colors-btn" onclick="resetColors()" style="padding:0.4rem 0.9rem" title="Clear overrides, use the scheme's own colors">Reset</button>
+    <span style="flex:1"></span>
+    <button class="btn btn-secondary" id="apply-all-btn" onclick="toggleApplyAll()" style="padding:0.4rem 0.9rem" title="Apply scheme changes to every profile, not just defaults">All profiles</button>
+    <button class="btn btn-secondary" id="export-btn" onclick="exportScheme()" style="padding:0.4rem 0.9rem" title="Copy the current scheme JSON to clipboard">Export</button>
+  </div>
+
   <!-- Tabs -->
   <div class="tabs">
     <button class="tab active" data-tab="installed" onclick="switchTab('installed')">
@@ -809,6 +1060,10 @@ const HTML = `<!DOCTYPE html>
   let opacityTimer = null;
   let history = [];   // applied scheme names, oldest -> newest
   let histIndex = -1; // current position in history
+  let overrides = { cursorColor: null, selectionBackground: null };
+  let applyAll = false;
+
+  function hex6(v) { return /^#[0-9a-fA-F]{6}$/.test(v || "") ? v : null; }
 
   function esc(str) {
     return String(str == null ? "" : str).replace(/[&<>"']/g, c =>
@@ -883,6 +1138,9 @@ const HTML = `<!DOCTYPE html>
     document.getElementById("font-size").textContent = currentSize;
     document.getElementById("opacity-slider").value = currentOpacity;
     document.getElementById("opacity-value").textContent = currentOpacity + "%";
+    overrides = data.overrides || { cursorColor: null, selectionBackground: null };
+    applyAll = !!data.applyAll;
+    document.getElementById("apply-all-btn").classList.toggle("active", applyAll);
     history = [currentScheme];
     histIndex = 0;
     updateHistButtons();
@@ -934,6 +1192,10 @@ const HTML = `<!DOCTYPE html>
     document.getElementById("tp-palette").innerHTML =
       '<div class="palette-row">' + swatch(normal) + '</div>' +
       '<div class="palette-row">' + swatch(bright) + '</div>';
+
+    // reflect cursor/selection colors (override if set, else the scheme's own)
+    document.getElementById("cursor-color").value = hex6(overrides.cursorColor) || hex6(s.cursorColor) || "#ffffff";
+    document.getElementById("selection-color").value = hex6(overrides.selectionBackground) || hex6(s.selectionBackground) || "#444444";
   }
 
   function renderGrid() {
@@ -951,7 +1213,7 @@ const HTML = `<!DOCTYPE html>
         .map(s => schemeCard(s));
     } else if (activeTab === "explore") {
       if (!externalLoaded) {
-        grid.innerHTML = '<div class="loading"><span class="spinner"></span>Loading 515+ themes from GitHub...</div>';
+        grid.innerHTML = '<div class="loading"><span class="pyramid"></span>Loading 515+ themes from GitHub...</div>';
         loadExternal();
         return;
       }
@@ -1131,6 +1393,41 @@ const HTML = `<!DOCTYPE html>
     document.getElementById("ui-toggle").innerHTML = theme === "light" ? "◎" : "◉";
   }
 
+  async function setColor(target, value) {
+    overrides[target] = value;
+    await fetch("/api/set-color", {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ target, value })
+    });
+    showToast((target === "cursorColor" ? "Cursor" : "Selection") + " color set");
+  }
+  async function resetColors() {
+    overrides = { cursorColor: null, selectionBackground: null };
+    for (const target of ["cursorColor", "selectionBackground"]) {
+      await fetch("/api/set-color", {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ target, value: null })
+      });
+    }
+    renderPreview();
+    showToast("Cursor & selection reset to scheme");
+  }
+  async function toggleApplyAll() {
+    applyAll = !applyAll;
+    document.getElementById("apply-all-btn").classList.toggle("active", applyAll);
+    await fetch("/api/apply-all", {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ on: applyAll })
+    });
+    showToast(applyAll ? "Applying to ALL profiles" : "Applying to defaults only");
+  }
+  async function exportScheme() {
+    const s = installedSchemes.find(x => x.name === currentScheme);
+    if (!s) return;
+    try { await navigator.clipboard.writeText(JSON.stringify(s, null, 4)); showToast("Copied " + s.name + " JSON"); }
+    catch (e) { showToast("Copy blocked by browser"); }
+  }
+
   async function changeSize(delta) {
     const newSize = currentSize + delta;
     if (newSize < 8 || newSize > 30) return;
@@ -1283,34 +1580,35 @@ const server = http.createServer(async (req, res) => {
   }
 
   if (route === "GET /api/state") {
+    lastShuffleActivity = Date.now();
     const settings = readSettings();
-    const schemes = settings.schemes.map(slimScheme);
+    const defaults = getDefaults(settings);
     json({
-      schemes,
+      schemes: (settings.schemes || []).map(slimScheme),
       current: getCurrentScheme(settings),
       font: getFont(settings),
       favorites: loadFavorites(),
       shuffle: { active: !!shuffleInterval, ms: shuffleMs, favsOnly: shuffleFavsOnly },
-      opacity: settings.profiles.defaults.opacity ?? 100,
+      opacity: defaults.opacity ?? 100,
+      applyAll: applyAllProfiles,
+      overrides: { cursorColor: defaults.cursorColor || null, selectionBackground: defaults.selectionBackground || null },
     });
     return;
   }
 
   if (route === "GET /api/current") {
-    const settings = readSettings();
-    json({ current: getCurrentScheme(settings) });
+    lastShuffleActivity = Date.now();
+    json({ current: getCurrentScheme(readSettings()) });
     return;
   }
 
   if (route === "POST /api/randomize") {
     const settings = readSettings();
-    const names = settings.schemes.map((s) => s.name);
     const current = getCurrentScheme(settings);
-    const others = names.filter((n) => n !== current);
+    const others = (settings.schemes || []).map((s) => s.name).filter((n) => n !== current);
     if (others.length === 0) { json({ scheme: current }); return; }
     const pick = others[Math.floor(Math.random() * others.length)];
-    settings.profiles.defaults.colorScheme = pick;
-    writeSettings(settings);
+    applyColorScheme(pick);
     json({ scheme: pick });
     return;
   }
@@ -1318,12 +1616,11 @@ const server = http.createServer(async (req, res) => {
   if (route === "POST /api/set-scheme") {
     const { name } = await parseBody(req);
     const settings = readSettings();
-    if (!settings.schemes.some((s) => s.name === name)) {
+    if (!(settings.schemes || []).some((s) => s.name === name)) {
       json({ error: "Unknown scheme" }, 400);
       return;
     }
-    settings.profiles.defaults.colorScheme = name;
-    writeSettings(settings);
+    applyColorScheme(name);
     json({ scheme: name });
     return;
   }
@@ -1331,11 +1628,13 @@ const server = http.createServer(async (req, res) => {
   if (route === "POST /api/set-font-size") {
     const { size } = await parseBody(req);
     if (size < 8 || size > 30) { json({ error: "Out of range" }, 400); return; }
-    const settings = readSettings();
-    const font = getFont(settings);
-    font.size = size;
-    settings.profiles.defaults.font = font;
-    writeSettings(settings);
+    if (!surgicalSetFontSize(size)) {
+      const settings = ensureDefaults(readSettings());
+      const font = getFont(settings);
+      font.size = size;
+      settings.profiles.defaults.font = font;
+      writeSettings(settings);
+    }
     json({ size });
     return;
   }
@@ -1362,11 +1661,39 @@ const server = http.createServer(async (req, res) => {
   if (route === "POST /api/set-opacity") {
     const { opacity } = await parseBody(req);
     if (opacity < 30 || opacity > 100) { json({ error: "Out of range" }, 400); return; }
-    const settings = readSettings();
-    settings.profiles.defaults.opacity = opacity;
-    settings.profiles.defaults.useAcrylic = opacity < 100;
-    writeSettings(settings);
+    if (!surgicalSetDefaults({ opacity, useAcrylic: opacity < 100 })) {
+      const settings = ensureDefaults(readSettings());
+      settings.profiles.defaults.opacity = opacity;
+      settings.profiles.defaults.useAcrylic = opacity < 100;
+      writeSettings(settings);
+    }
     json({ opacity });
+    return;
+  }
+
+  if (route === "POST /api/apply-all") {
+    const { on } = await parseBody(req);
+    applyAllProfiles = !!on;
+    json({ applyAll: applyAllProfiles });
+    return;
+  }
+
+  if (route === "POST /api/set-color") {
+    const { target, value } = await parseBody(req);
+    if (target !== "cursorColor" && target !== "selectionBackground") { json({ error: "Bad target" }, 400); return; }
+    if (value && !/^#[0-9a-fA-F]{6}$/.test(value)) { json({ error: "Bad color" }, 400); return; }
+    if (value) {
+      if (!surgicalSetDefaults({ [target]: value })) {
+        const s = ensureDefaults(readSettings());
+        s.profiles.defaults[target] = value;
+        writeSettings(s);
+      }
+    } else {
+      const s = ensureDefaults(readSettings()); // reset: remove the override (clean re-serialize)
+      delete s.profiles.defaults[target];
+      writeSettings(s);
+    }
+    json({ target, value: value || null });
     return;
   }
 
@@ -1387,12 +1714,15 @@ const server = http.createServer(async (req, res) => {
       const theme = await fetchExternalTheme(themeUrl);
       if (!theme) { json({ error: "Failed to fetch" }, 500); return; }
       const settings = readSettings();
-      if (settings.schemes.some((s) => s.name === name)) {
+      if ((settings.schemes || []).some((s) => s.name === name)) {
         json({ error: "Already installed" }, 400);
         return;
       }
-      settings.schemes.push(theme);
-      writeSettings(settings);
+      if (!surgicalPushScheme(theme)) {
+        if (!settings.schemes) settings.schemes = [];
+        settings.schemes.push(theme);
+        writeSettings(settings);
+      }
       json({ scheme: slimScheme(theme) });
     } catch (e) {
       json({ error: e.message }, 500);
@@ -1411,6 +1741,14 @@ const server = http.createServer(async (req, res) => {
   }
 });
 
+server.on("error", (e) => {
+  if (e.code === "EADDRINUSE") {
+    console.error(`Port ${PORT} is already in use. Pick another: PORT=8080 the-terminalizer`);
+  } else {
+    console.error("Server error:", e.message);
+  }
+  process.exit(1);
+});
 server.listen(PORT, HOST, () => {
   console.log(`The Terminalizer running at http://localhost:${PORT}`);
 });

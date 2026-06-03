@@ -15,8 +15,11 @@ Randomize, preview, and hot-swap your Windows Terminal themes from a sleek web U
 - **Undo / redo** — multi-step history, so you can step back and forth between themes
 - **Favorites** — star the themes you love, shuffle from favorites only
 - **Font size & opacity** — adjust terminal font size and window transparency (acrylic) from the UI
+- **Cursor & selection colors** — override them per your taste, or reset to the scheme's own
+- **Apply to all profiles** — change every profile at once, not just the default
+- **Export** — copy the current scheme's JSON to your clipboard
 - **Search, sort & filter** — filter by name, sort by A–Z / brightness / hue, filter dark vs light
-- **Light / dark UI** — toggle the app's own theme (remembered across sessions)
+- **Themeable UI** — gold ⇄ chrome "helmet" toggle (remembered across sessions)
 
 ## Keyboard Shortcuts
 
@@ -65,7 +68,9 @@ PORT=8080 the-terminalizer
 
 ## How It Works
 
-The Terminalizer reads and writes your Windows Terminal `settings.json` to swap color schemes in real time. Your favorites and theme cache are stored in `~/.terminalizer/`. Before its first write, it saves a one-time backup of your original `settings.json` to `~/.terminalizer/settings.backup.json`, and all writes are atomic (temp file + rename) so a crash can't corrupt your config.
+The Terminalizer reads and writes your Windows Terminal `settings.json` to swap color schemes in real time. Your favorites and theme cache are stored in `~/.terminalizer/`. Before its first write, it saves a one-time backup of your original `settings.json` to `~/.terminalizer/settings.backup.json`, and all writes are atomic (temp file + rename) so a crash can't corrupt your config. Edits are surgical — your comments and formatting in `settings.json` are preserved (except when "apply to all profiles" is on, which rewrites the file).
+
+Auto-detects stable, Preview, and unpackaged Windows Terminal installs.
 
 ## Security
 
