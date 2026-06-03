@@ -217,36 +217,95 @@ const HTML = `<!DOCTYPE html>
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
   <style>
+    /* Daft Punk — Gold helmet (black glass + metallic gold) [default / data-ui-theme="dark"] */
     :root {
-      --bg: #0d0d1a; --surface: #15152a; --surface-2: #111120; --surface-3: #1a1a32;
-      --accent-bg: #1c1c38; --accent-count: #1e2550;
-      --border: #2a2a4a; --border-strong: #3a3a6a; --border-soft: #1e1e35; --border-faint: #1a1a30;
-      --text: #e0e0e0; --text-strong: #ffffff; --text-dim: #9a9ab0; --text-mid: #cccccc;
-      --text-faint: #4a4a65; --text-ghost: #555555; --placeholder: #3a3a55;
-      --accent: #7aa2f7; --accent-2: #bb9af7; --accent-soft: #c0caf5;
-      --card-border: rgba(255,255,255,0.06); --card-border-hover: rgba(255,255,255,0.12);
-      --shadow: rgba(0,0,0,0.3); --shadow-strong: rgba(0,0,0,0.35);
+      --bg: #070707;
+      --bg-gradient: radial-gradient(ellipse 120% 90% at 50% -15%, #241d0c 0%, #14110a 32%, #0a0a0a 66%, #050505 100%);
+      --glow-a: radial-gradient(circle, rgba(243,201,105,0.5), transparent 70%);
+      --glow-b: radial-gradient(circle, rgba(212,166,55,0.42), transparent 70%);
+      --glow-c: radial-gradient(circle, rgba(255,180,60,0.36), transparent 70%);
+      --grid: rgba(243,201,105,0.05); --mote: rgba(245,210,130,0.95); --scan: rgba(243,201,105,0.55);
+      --title-grad: linear-gradient(180deg, #fbe7a6 0%, #f3c969 45%, #b8862e 76%, #f6d98a 100%);
+      --glass-bg: rgba(255,255,255,0.05); --glass-bg-strong: rgba(255,255,255,0.10);
+      --glass-border: rgba(243,201,105,0.30); --glass-hi: rgba(255,240,200,0.32);
+      --glass-shadow: 0 10px 34px rgba(0,0,0,0.6); --blur: blur(14px) saturate(1.2);
+      --surface: rgba(255,255,255,0.05); --surface-2: rgba(0,0,0,0.42); --surface-3: rgba(243,201,105,0.14);
+      --accent-bg: rgba(243,201,105,0.18); --accent-count: rgba(243,201,105,0.28);
+      --border: rgba(243,201,105,0.26); --border-strong: rgba(243,201,105,0.55);
+      --border-soft: rgba(255,255,255,0.10); --border-faint: rgba(255,255,255,0.07);
+      --text: #ece4d2; --text-strong: #fff6e2; --text-dim: #b9ad92; --text-mid: #d8ccae;
+      --text-faint: #8a8068; --text-ghost: #6f6754; --placeholder: #7a715b;
+      --accent: #f6d98a; --accent-2: #c9972e; --accent-soft: #f3c969;
+      --card-border: rgba(243,201,105,0.18); --card-border-hover: rgba(243,201,105,0.6);
+      --shadow: rgba(0,0,0,0.5); --shadow-strong: rgba(0,0,0,0.7);
     }
+    /* Daft Punk — Chrome helmet (black glass + cyan chrome) */
     :root[data-ui-theme="light"] {
-      --bg: #eceef6; --surface: #ffffff; --surface-2: #f5f6fb; --surface-3: #e9ebf6;
-      --accent-bg: #e7ecfc; --accent-count: #dde6ff;
-      --border: #d4d8e8; --border-strong: #bcc2d8; --border-soft: #e3e6f1; --border-faint: #e7e9f3;
-      --text: #2c2e3e; --text-strong: #14151f; --text-dim: #5b5e74; --text-mid: #44475a;
-      --text-faint: #8b8fa6; --text-ghost: #9a9eb4; --placeholder: #a8acc0;
-      --accent: #4f74d8; --accent-2: #8c63d8; --accent-soft: #45599e;
-      --card-border: rgba(0,0,0,0.08); --card-border-hover: rgba(0,0,0,0.16);
-      --shadow: rgba(40,44,80,0.12); --shadow-strong: rgba(40,44,80,0.18);
+      --bg: #060708;
+      --bg-gradient: radial-gradient(ellipse 120% 90% at 50% -15%, #0c1f29 0%, #0a141a 32%, #070b0d 66%, #040506 100%);
+      --glow-a: radial-gradient(circle, rgba(127,223,255,0.46), transparent 70%);
+      --glow-b: radial-gradient(circle, rgba(160,180,200,0.36), transparent 70%);
+      --glow-c: radial-gradient(circle, rgba(90,200,255,0.32), transparent 70%);
+      --grid: rgba(127,223,255,0.06); --mote: rgba(200,238,255,0.95); --scan: rgba(127,223,255,0.55);
+      --title-grad: linear-gradient(180deg, #eafaff 0%, #bfe6f5 45%, #6f93a6 78%, #dff2fb 100%);
+      --glass-bg: rgba(255,255,255,0.06); --glass-bg-strong: rgba(255,255,255,0.12);
+      --glass-border: rgba(170,210,230,0.34); --glass-hi: rgba(220,245,255,0.38);
+      --glass-shadow: 0 10px 34px rgba(0,0,0,0.55); --blur: blur(14px) saturate(1.2);
+      --surface: rgba(255,255,255,0.06); --surface-2: rgba(0,0,0,0.42); --surface-3: rgba(170,210,230,0.16);
+      --accent-bg: rgba(127,223,255,0.18); --accent-count: rgba(127,223,255,0.28);
+      --border: rgba(170,210,230,0.32); --border-strong: rgba(127,223,255,0.6);
+      --border-soft: rgba(255,255,255,0.10); --border-faint: rgba(255,255,255,0.07);
+      --text: #dceaf0; --text-strong: #f2fbff; --text-dim: #9fb3bd; --text-mid: #c2d4dd;
+      --text-faint: #6f828c; --text-ghost: #5b6c75; --placeholder: #6a7d87;
+      --accent: #aee9ff; --accent-2: #3aa9d6; --accent-soft: #7fdfff;
+      --card-border: rgba(170,210,230,0.20); --card-border-hover: rgba(127,223,255,0.6);
+      --shadow: rgba(0,0,0,0.5); --shadow-strong: rgba(0,0,0,0.7);
     }
     * { margin: 0; padding: 0; box-sizing: border-box; }
     body {
       min-height: 100vh;
       font-family: 'Inter', -apple-system, system-ui, sans-serif;
-      background: var(--bg);
+      background: var(--bg-gradient) fixed;
       color: var(--text);
       -webkit-font-smoothing: antialiased;
       -moz-osx-font-smoothing: grayscale;
-      transition: background 0.3s ease, color 0.3s ease;
+      transition: color 0.3s ease;
     }
+
+    /* Daft Punk ambient: Tron grid + drifting LED motes + visor scanline */
+    .aero-bg { position: fixed; inset: 0; overflow: hidden; pointer-events: none; z-index: -1; }
+    .aero-bg::before {
+      content: ''; position: absolute; inset: -2px;
+      background-image:
+        linear-gradient(var(--grid) 1px, transparent 1px),
+        linear-gradient(90deg, var(--grid) 1px, transparent 1px);
+      background-size: 46px 46px;
+      -webkit-mask-image: radial-gradient(ellipse 95% 75% at 50% 38%, #000 25%, transparent 82%);
+      mask-image: radial-gradient(ellipse 95% 75% at 50% 38%, #000 25%, transparent 82%);
+    }
+    .aero-bg .orb { position: absolute; border-radius: 50%; filter: blur(60px); opacity: 0.55; }
+    .orb-1 { width: 380px; height: 380px; top: -110px; left: -80px; background: var(--glow-a); }
+    .orb-2 { width: 300px; height: 300px; top: 26%; right: -90px; background: var(--glow-b); }
+    .orb-3 { width: 460px; height: 460px; bottom: -170px; left: 30%; background: var(--glow-c); }
+    .bubble {
+      position: absolute; bottom: -40px; border-radius: 2px;
+      background: var(--mote); box-shadow: 0 0 8px 1px var(--mote);
+      opacity: 0; animation: aero-rise linear infinite;
+    }
+    @keyframes aero-rise {
+      0% { transform: translate(0, 0); opacity: 0; }
+      14% { opacity: 0.9; }
+      86% { opacity: 0.5; }
+      100% { transform: translate(24px, -112vh); opacity: 0; }
+    }
+    .scanline {
+      position: absolute; left: 0; right: 0; height: 2px; top: -2%;
+      background: linear-gradient(90deg, transparent, var(--scan) 25%, var(--scan) 75%, transparent);
+      box-shadow: 0 0 14px 2px var(--scan); opacity: 0.45;
+      animation: aero-scan 7s linear infinite;
+    }
+    @keyframes aero-scan { 0% { top: -2%; } 100% { top: 102%; } }
+    @media (prefers-reduced-motion: reduce) { .bubble, .scanline { animation: none; display: none; } }
     .app {
       max-width: 900px;
       margin: 0 auto;
@@ -258,33 +317,64 @@ const HTML = `<!DOCTYPE html>
       position: relative;
     }
     h1 {
-      font-size: 1.6rem; color: var(--text-strong); margin-bottom: 0.35rem;
-      font-weight: 700; letter-spacing: -0.02em;
+      font-size: 1.7rem; margin-bottom: 0.35rem;
+      font-weight: 800; letter-spacing: 0.04em; text-transform: uppercase;
+      background: var(--title-grad);
+      -webkit-background-clip: text; background-clip: text;
+      -webkit-text-fill-color: transparent; color: transparent;
+      filter: drop-shadow(0 1px 1px rgba(0,0,0,0.6));
     }
-    .subtitle { font-size: 0.82rem; color: var(--text-ghost); font-weight: 400; letter-spacing: 0.01em; }
+    .subtitle { font-size: 0.82rem; color: var(--text-dim); font-weight: 500; letter-spacing: 0.01em; }
+
+    /* Daft Punk helmet red LED scanner (Cylon sweep) */
+    .red-scanner {
+      position: relative; height: 3px; width: 190px; margin: 1rem auto 0;
+      border-radius: 3px; overflow: hidden;
+      background: rgba(255,40,40,0.08);
+      box-shadow: inset 0 0 0 1px rgba(255,60,60,0.16);
+    }
+    .red-scanner .led {
+      position: absolute; top: 0; bottom: 0; left: -40px; width: 40px; border-radius: 3px;
+      background: linear-gradient(90deg, transparent, #ff2a2a 42%, #ff6a6a 50%, #ff2a2a 58%, transparent);
+      box-shadow: 0 0 10px 2px rgba(255,40,40,0.85), 0 0 22px 5px rgba(255,30,30,0.5);
+      animation: red-scan 2.2s cubic-bezier(0.45,0,0.55,1) infinite alternate;
+    }
+    @keyframes red-scan { from { left: -40px; } to { left: 190px; } }
+    @media (prefers-reduced-motion: reduce) {
+      .red-scanner .led { animation: none; left: 75px; }
+    }
 
     /* UI light/dark toggle */
     .ui-toggle {
       position: absolute; right: 0; top: 0;
-      background: var(--surface); border: 1px solid var(--border); color: var(--text-dim);
-      width: 34px; height: 34px; border-radius: 10px; cursor: pointer;
-      display: flex; align-items: center; justify-content: center; font-size: 0.95rem;
+      background: var(--surface); border: 1px solid var(--glass-border); color: var(--accent);
+      width: 36px; height: 36px; border-radius: 50%; cursor: pointer;
+      display: flex; align-items: center; justify-content: center; font-size: 1.05rem;
       transition: all 0.2s ease;
+      -webkit-backdrop-filter: var(--blur); backdrop-filter: var(--blur);
+      box-shadow: inset 0 1px 0 var(--glass-hi), 0 4px 14px var(--shadow);
     }
-    .ui-toggle:hover { border-color: var(--accent); color: var(--text); }
+    .ui-toggle:hover { border-color: var(--accent); transform: scale(1.08); }
 
     /* Terminal Preview */
     .terminal-preview {
-      border-radius: 14px;
+      position: relative;
+      border-radius: 16px;
       overflow: hidden;
       margin-bottom: 1.75rem;
-      border: 1px solid var(--border);
+      border: 1px solid var(--glass-border);
       font-family: 'JetBrains Mono', 'Cascadia Code', 'Fira Code', monospace;
       font-size: 0.82rem;
       line-height: 1.6;
       transition: background 0.35s ease, border-color 0.2s ease;
-      box-shadow: 0 8px 32px var(--shadow);
+      box-shadow: var(--glass-shadow), inset 0 1px 0 var(--glass-hi);
     }
+    /* glossy glass reflection across the screen */
+    .terminal-preview::after {
+      content: ''; position: absolute; inset: 0; pointer-events: none; z-index: 2;
+      background: linear-gradient(158deg, rgba(255,255,255,0.20) 0%, rgba(255,255,255,0.06) 20%, transparent 42%);
+    }
+    .terminal-titlebar, .terminal-body, .palette-strip { position: relative; z-index: 1; }
     .terminal-titlebar {
       padding: 0.6rem 1rem;
       display: flex;
@@ -334,27 +424,32 @@ const HTML = `<!DOCTYPE html>
     .btn:active { transform: scale(0.97); }
     .btn[disabled] { opacity: 0.4; cursor: not-allowed; pointer-events: none; }
     .btn-primary {
-      background: linear-gradient(135deg, var(--accent), var(--accent-2));
-      color: #1a1b26;
-      border: none;
-      box-shadow: 0 2px 8px rgba(122,162,247,0.2);
+      background:
+        linear-gradient(to bottom, rgba(255,255,255,0.6), rgba(255,255,255,0.05) 48%, rgba(0,0,0,0.04) 52%, rgba(0,0,0,0.12)),
+        linear-gradient(to bottom, var(--accent), var(--accent-2));
+      color: #0c0c0e;
+      border: 1px solid rgba(255,255,255,0.55);
+      text-shadow: 0 1px 0 rgba(255,255,255,0.45);
+      box-shadow: 0 6px 18px var(--shadow-strong), inset 0 1px 0 rgba(255,255,255,0.9);
     }
     .btn-primary:hover {
       transform: translateY(-2px);
-      box-shadow: 0 8px 24px rgba(122,162,247,0.3);
-      filter: brightness(1.05);
+      box-shadow: 0 10px 26px var(--shadow-strong), inset 0 1px 0 rgba(255,255,255,0.95);
+      filter: brightness(1.06) saturate(1.1);
     }
     .btn-primary:active { transform: translateY(0) scale(0.97); }
     .btn-secondary {
       background: var(--surface);
-      color: var(--text-dim);
+      color: var(--text);
+      -webkit-backdrop-filter: var(--blur); backdrop-filter: var(--blur);
+      box-shadow: inset 0 1px 0 var(--glass-hi), 0 3px 12px var(--shadow);
     }
-    .btn-secondary:hover { border-color: var(--accent); color: var(--text); background: var(--surface-3); }
+    .btn-secondary:hover { border-color: var(--accent); color: var(--text-strong); background: var(--surface-3); }
     .btn-secondary.active {
       border-color: var(--accent-2);
-      color: var(--accent-2);
+      color: var(--text-strong);
       background: var(--accent-bg);
-      box-shadow: 0 0 12px rgba(187,154,247,0.15);
+      box-shadow: 0 0 16px var(--accent-bg), inset 0 1px 0 var(--glass-hi);
     }
 
     /* Font size */
@@ -369,11 +464,13 @@ const HTML = `<!DOCTYPE html>
       letter-spacing: 0.1em; font-weight: 600; margin-right: 2px;
     }
     .size-btn {
-      background: var(--surface); border: 1px solid var(--border); color: var(--text-dim);
+      background: var(--surface); border: 1px solid var(--glass-border); color: var(--text);
       width: 28px; height: 28px; border-radius: 8px; cursor: pointer;
       display: flex; align-items: center; justify-content: center;
       font-size: 0.9rem; font-weight: 500; transition: all 0.2s ease;
       font-family: 'Inter', system-ui, sans-serif;
+      -webkit-backdrop-filter: var(--blur); backdrop-filter: var(--blur);
+      box-shadow: inset 0 1px 0 var(--glass-hi);
     }
     .size-btn:hover { border-color: var(--accent); color: var(--text-strong); background: var(--surface-3); }
     .size-btn:active { transform: scale(0.92); }
@@ -387,10 +484,12 @@ const HTML = `<!DOCTYPE html>
       display: flex; align-items: center; gap: 8px;
     }
     .shuffle-select {
-      background: var(--surface); border: 1px solid var(--border); color: var(--text-dim);
+      background: var(--surface); border: 1px solid var(--glass-border); color: var(--text);
       padding: 0.45rem 0.65rem; border-radius: 10px; font-size: 0.78rem;
       font-family: 'Inter', system-ui, sans-serif; cursor: pointer;
       font-weight: 500; transition: all 0.2s ease;
+      -webkit-backdrop-filter: var(--blur); backdrop-filter: var(--blur);
+      box-shadow: inset 0 1px 0 var(--glass-hi);
     }
     .shuffle-select:hover { border-color: var(--border-strong); color: var(--text-mid); }
     .shuffle-select:focus { outline: none; border-color: var(--accent); }
@@ -398,9 +497,11 @@ const HTML = `<!DOCTYPE html>
     /* Opacity slider */
     .slider-row {
       display: flex; align-items: center; gap: 10px;
-      background: var(--surface-2); border: 1px solid var(--border-soft);
-      border-radius: 12px; padding: 0.6rem 1.1rem;
+      background: var(--surface); border: 1px solid var(--glass-border);
+      border-radius: 14px; padding: 0.6rem 1.1rem;
       margin-bottom: 1.75rem;
+      -webkit-backdrop-filter: var(--blur); backdrop-filter: var(--blur);
+      box-shadow: var(--glass-shadow), inset 0 1px 0 var(--glass-hi);
     }
     .slider-row label {
       font-size: 0.65rem; color: var(--text-faint); text-transform: uppercase;
@@ -447,8 +548,8 @@ const HTML = `<!DOCTYPE html>
     }
     .search-bar {
       flex: 1;
-      background: var(--surface-2);
-      border: 1px solid var(--border);
+      background: var(--surface);
+      border: 1px solid var(--glass-border);
       color: var(--text);
       padding: 0.6rem 1rem;
       border-radius: 12px;
@@ -456,6 +557,8 @@ const HTML = `<!DOCTYPE html>
       font-family: 'Inter', system-ui, sans-serif;
       font-weight: 400;
       transition: border-color 0.2s ease, box-shadow 0.2s ease;
+      -webkit-backdrop-filter: var(--blur); backdrop-filter: var(--blur);
+      box-shadow: inset 0 1px 0 var(--glass-hi);
     }
     .search-bar:focus {
       outline: none; border-color: var(--accent);
@@ -464,10 +567,12 @@ const HTML = `<!DOCTYPE html>
     .search-bar::placeholder { color: var(--placeholder); }
     .filter-pills { display: flex; gap: 4px; flex-shrink: 0; }
     .filter-pill {
-      background: var(--surface); border: 1px solid var(--border); color: var(--text-faint);
+      background: var(--surface); border: 1px solid var(--glass-border); color: var(--text-dim);
       padding: 0.45rem 0.8rem; border-radius: 10px; font-size: 0.72rem;
       cursor: pointer; font-family: 'Inter', system-ui, sans-serif;
       font-weight: 600; transition: all 0.2s ease; letter-spacing: 0.02em;
+      -webkit-backdrop-filter: var(--blur); backdrop-filter: var(--blur);
+      box-shadow: inset 0 1px 0 var(--glass-hi);
     }
     .filter-pill:hover { color: var(--text-dim); border-color: var(--border-strong); }
     .filter-pill.active { background: var(--accent-bg); color: var(--accent-soft); border-color: var(--accent); }
@@ -486,7 +591,7 @@ const HTML = `<!DOCTYPE html>
     .scheme-grid::-webkit-scrollbar-thumb { background: var(--border); border-radius: 4px; }
 
     .scheme-card {
-      border: 2px solid var(--card-border);
+      border: 1px solid var(--card-border);
       border-radius: 12px;
       padding: 0.6rem 0.85rem;
       cursor: pointer;
@@ -495,7 +600,16 @@ const HTML = `<!DOCTYPE html>
       align-items: center;
       gap: 10px;
       position: relative;
+      box-shadow: 0 3px 10px var(--shadow), inset 0 1px 0 rgba(255,255,255,0.25);
     }
+    /* glossy top sheen on each card */
+    .scheme-card::before {
+      content: ''; position: absolute; left: 1px; right: 1px; top: 1px; height: 46%;
+      border-radius: 11px 11px 40% 40% / 11px 11px 20px 20px;
+      background: linear-gradient(to bottom, rgba(255,255,255,0.34), rgba(255,255,255,0));
+      pointer-events: none; z-index: 0;
+    }
+    .scheme-card > * { position: relative; z-index: 1; }
     .scheme-card:hover {
       transform: translateY(-2px);
       box-shadow: 0 6px 16px var(--shadow-strong);
@@ -543,12 +657,13 @@ const HTML = `<!DOCTYPE html>
     .fav-btn.favorited { color: #f0c040; text-shadow: 0 0 10px rgba(240,192,64,0.5); }
 
     .install-btn {
-      background: rgba(122,162,247,0.1); border: 1px solid rgba(122,162,247,0.25); color: #7aa2f7;
+      background: var(--accent-bg); border: 1px solid var(--accent); color: var(--text-strong);
       font-size: 0.68rem; padding: 4px 10px; border-radius: 8px;
       cursor: pointer; flex-shrink: 0; font-family: 'Inter', system-ui, sans-serif;
       font-weight: 600; transition: all 0.2s ease;
+      box-shadow: inset 0 1px 0 var(--glass-hi);
     }
-    .install-btn:hover { background: rgba(122,162,247,0.2); border-color: #7aa2f7; }
+    .install-btn:hover { background: var(--accent); color: #0c0c0e; }
 
     /* Loading */
     .loading { text-align: center; padding: 2rem; color: var(--text-ghost); font-size: 0.85rem; }
@@ -559,8 +674,11 @@ const HTML = `<!DOCTYPE html>
     .toast {
       position: fixed; bottom: 2rem; left: 50%;
       transform: translateX(-50%) translateY(100px);
-      background: linear-gradient(135deg, var(--accent), var(--accent-2));
-      color: #1a1b26;
+      background:
+        linear-gradient(to bottom, rgba(255,255,255,0.5), rgba(255,255,255,0) 50%),
+        linear-gradient(135deg, var(--accent), var(--accent-2));
+      color: #0c0c0e;
+      border: 1px solid rgba(255,255,255,0.5);
       padding: 0.6rem 1.6rem; border-radius: 12px;
       font-weight: 600; font-size: 0.78rem;
       font-family: 'Inter', system-ui, sans-serif;
@@ -573,11 +691,29 @@ const HTML = `<!DOCTYPE html>
   </style>
 </head>
 <body>
+<div class="aero-bg" aria-hidden="true">
+  <div class="orb orb-1"></div>
+  <div class="orb orb-2"></div>
+  <div class="orb orb-3"></div>
+  <div class="scanline"></div>
+  <span class="bubble" style="left:5%;width:4px;height:4px;animation-duration:16s;animation-delay:-3s"></span>
+  <span class="bubble" style="left:13%;width:6px;height:6px;animation-duration:22s;animation-delay:-9s"></span>
+  <span class="bubble" style="left:22%;width:3px;height:3px;animation-duration:13s;animation-delay:-5s"></span>
+  <span class="bubble" style="left:34%;width:5px;height:5px;animation-duration:19s;animation-delay:-1s"></span>
+  <span class="bubble" style="left:43%;width:3px;height:3px;animation-duration:12s;animation-delay:-7s"></span>
+  <span class="bubble" style="left:52%;width:6px;height:6px;animation-duration:24s;animation-delay:-4s"></span>
+  <span class="bubble" style="left:61%;width:4px;height:4px;animation-duration:17s;animation-delay:-11s"></span>
+  <span class="bubble" style="left:70%;width:3px;height:3px;animation-duration:14s;animation-delay:-2s"></span>
+  <span class="bubble" style="left:79%;width:5px;height:5px;animation-duration:21s;animation-delay:-8s"></span>
+  <span class="bubble" style="left:88%;width:4px;height:4px;animation-duration:18s;animation-delay:-6s"></span>
+  <span class="bubble" style="left:95%;width:6px;height:6px;animation-duration:23s;animation-delay:-10s"></span>
+</div>
 <div class="app">
   <header>
-    <button class="ui-toggle" id="ui-toggle" onclick="toggleUiTheme()" title="Toggle light / dark UI">&#9789;</button>
+    <button class="ui-toggle" id="ui-toggle" onclick="toggleUiTheme()" title="Toggle Gold / Chrome helmet">&#9737;</button>
     <h1>The Terminalizer</h1>
     <p class="subtitle">Randomize, preview, and hot-swap your Windows Terminal themes</p>
+    <div class="red-scanner" aria-hidden="true"><span class="led"></span></div>
   </header>
 
   <!-- Terminal Preview -->
@@ -992,7 +1128,7 @@ const HTML = `<!DOCTYPE html>
   }
   function applyUiTheme(theme) {
     document.documentElement.setAttribute("data-ui-theme", theme);
-    document.getElementById("ui-toggle").innerHTML = theme === "light" ? "☀" : "☽";
+    document.getElementById("ui-toggle").innerHTML = theme === "light" ? "◎" : "◉";
   }
 
   async function changeSize(delta) {
@@ -1111,7 +1247,7 @@ const HTML = `<!DOCTYPE html>
     else if (e.key === "f" || e.key === "F") { if (currentScheme) toggleFav(currentScheme); }
   });
 
-  // Restore saved UI theme (default dark) before first paint of state
+  // Restore saved UI theme (default Gold helmet) before first paint of state
   (function () {
     let saved = "dark";
     try { saved = localStorage.getItem("terminalizer-ui-theme") || "dark"; } catch (e) {}
