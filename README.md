@@ -6,14 +6,27 @@ Randomize, preview, and hot-swap your Windows Terminal themes from a sleek web U
 
 ## Features
 
-- **515+ themes** — browse and install from the iTerm2 Color Schemes collection
-- **Live preview** — see how each theme looks before applying it
+- **515+ themes** — browse, install, and apply in one click from the iTerm2 Color Schemes collection
+- **Live preview** — see each theme rendered, including its full 16-color ANSI palette, before applying
 - **Randomize** — one click to switch to a random theme
-- **Auto-shuffle** — cycle through themes on a timer (30s to 30m)
+- **Random favorite** — jump to a random theme from your favorites
+- **Surprise me** — install & apply a random theme from all 515+
+- **Auto-shuffle** — cycle through themes on a timer (30s to 30m), all themes or favorites only
+- **Undo / redo** — multi-step history, so you can step back and forth between themes
 - **Favorites** — star the themes you love, shuffle from favorites only
-- **Font size control** — adjust terminal font size from the UI
-- **Opacity slider** — set window transparency with acrylic blur
-- **Search** — filter through all installed and available themes
+- **Font size & opacity** — adjust terminal font size and window transparency (acrylic) from the UI
+- **Search, sort & filter** — filter by name, sort by A–Z / brightness / hue, filter dark vs light
+- **Light / dark UI** — toggle the app's own theme (remembered across sessions)
+
+## Keyboard Shortcuts
+
+| Key | Action |
+| --- | --- |
+| `Space` | Randomize |
+| `U` | Undo |
+| `R` | Redo |
+| `F` | Favorite the current theme |
+| `/` | Focus search |
 
 ## Install
 
@@ -52,7 +65,15 @@ PORT=8080 the-terminalizer
 
 ## How It Works
 
-The Terminalizer reads and writes your Windows Terminal `settings.json` to swap color schemes in real time. Your favorites and theme cache are stored in `~/.terminalizer/`.
+The Terminalizer reads and writes your Windows Terminal `settings.json` to swap color schemes in real time. Your favorites and theme cache are stored in `~/.terminalizer/`. Before its first write, it saves a one-time backup of your original `settings.json` to `~/.terminalizer/settings.backup.json`, and all writes are atomic (temp file + rename) so a crash can't corrupt your config.
+
+## Security
+
+The Terminalizer modifies your terminal configuration, so it is designed to stay on your machine:
+
+- The server binds to **`127.0.0.1` only** — it is not reachable from your local network.
+- State-changing requests are protected against **CSRF** (cross-site requests are rejected).
+- Theme installs are restricted to the official iTerm2-Color-Schemes source on GitHub.
 
 ## License
 

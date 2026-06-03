@@ -29,7 +29,11 @@ const DATA_DIR = path.join(os.homedir(), ".terminalizer");
 if (!fs.existsSync(DATA_DIR)) fs.mkdirSync(DATA_DIR, { recursive: true });
 const FAVORITES_PATH = path.join(DATA_DIR, "favorites.json");
 const CACHE_PATH = path.join(DATA_DIR, "themes-cache.json");
+const BACKUP_PATH = path.join(DATA_DIR, "settings.backup.json");
 const PORT = process.env.PORT || 3456;
+// Bind to loopback only — this API mutates your Windows Terminal config with no auth,
+// so it must not be reachable from the local network. Override with HOST=0.0.0.0 at your own risk.
+const HOST = process.env.HOST || "127.0.0.1";
 
 // --- Favorites ---
 function loadFavorites() {
@@ -41,17 +45,66 @@ function saveFavorites(favs) {
 }
 
 // --- Settings ---
-function readSettings() {
-  return JSON.parse(fs.readFileSync(SETTINGS_PATH, "utf-8"));
+// Windows Terminal's settings.json is JSONC: it can contain // and /* */ comments
+// and trailing commas. Strip those (without touching string contents) before parsing.
+function parseJsonc(text) {
+  text = text.replace(/^﻿/, ""); // strip BOM
+  let out = "", inStr = false, inLine = false, inBlock = false;
+  for (let i = 0; i < text.length; i++) {
+    const c = text[i], n = text[i + 1];
+    if (inLine) { if (c === "\n") { inLine = false; out += c; } continue; }
+    if (inBlock) { if (c === "*" && n === "/") { inBlock = false; i++; } continue; }
+    if (inStr) {
+      out += c;
+      if (c === "\\") out += text[++i] ?? "";
+      else if (c === '"') inStr = false;
+      continue;
+    }
+    if (c === '"') { inStr = true; out += c; continue; }
+    if (c === "/" && n === "/") { inLine = true; i++; continue; }
+    if (c === "/" && n === "*") { inBlock = true; i++; continue; }
+    out += c;
+  }
+  out = out.replace(/,(\s*[}\]])/g, "$1"); // trailing commas
+  return JSON.parse(out);
 }
+
+function readSettings() {
+  return parseJsonc(fs.readFileSync(SETTINGS_PATH, "utf-8"));
+}
+
 function writeSettings(settings) {
-  fs.writeFileSync(SETTINGS_PATH, JSON.stringify(settings, null, 4), "utf-8");
+  // Back up the user's original config once, before we ever touch it.
+  try {
+    if (!fs.existsSync(BACKUP_PATH) && fs.existsSync(SETTINGS_PATH)) {
+      fs.copyFileSync(SETTINGS_PATH, BACKUP_PATH);
+    }
+  } catch {}
+  // Atomic write: write to a temp file in the same dir, then rename over the target,
+  // so a crash mid-write can never leave a corrupted settings.json.
+  const tmp = SETTINGS_PATH + ".terminalizer.tmp";
+  fs.writeFileSync(tmp, JSON.stringify(settings, null, 4), "utf-8");
+  fs.renameSync(tmp, SETTINGS_PATH);
 }
 function getCurrentScheme(settings) {
   return settings.profiles.defaults.colorScheme || "Tokyo Night";
 }
 function getFont(settings) {
   return settings.profiles.defaults.font || { face: "JetBrainsMono Nerd Font", size: 13, weight: "normal" };
+}
+
+// Standard Windows Terminal color-scheme keys (16 ANSI + surfaces). Used to slim schemes
+// down to just what the UI needs (full palette for the preview strip, swatches, etc.).
+const SCHEME_KEYS = [
+  "background", "foreground", "cursorColor", "selectionBackground",
+  "black", "red", "green", "yellow", "blue", "purple", "cyan", "white",
+  "brightBlack", "brightRed", "brightGreen", "brightYellow",
+  "brightBlue", "brightPurple", "brightCyan", "brightWhite",
+];
+function slimScheme(s) {
+  const o = { name: s.name };
+  for (const k of SCHEME_KEYS) if (s[k] !== undefined) o[k] = s[k];
+  return o;
 }
 
 // --- External themes ---
@@ -126,8 +179,31 @@ function parseBody(req) {
   return new Promise((resolve) => {
     let body = "";
     req.on("data", (c) => (body += c));
-    req.on("end", () => resolve(JSON.parse(body)));
+    req.on("end", () => {
+      try { resolve(JSON.parse(body || "{}")); }
+      catch { resolve({}); } // malformed body -> empty object, never hang the request
+    });
   });
+}
+
+// Only fetch installable themes from the known upstream host (blocks SSRF via a crafted url).
+function isAllowedThemeUrl(u) {
+  try {
+    const parsed = new URL(u);
+    return parsed.protocol === "https:" && parsed.hostname === "raw.githubusercontent.com";
+  } catch { return false; }
+}
+
+// CSRF guard: a browser sets Origin (or at least Referer) on cross-site requests. Reject any
+// POST whose Origin/Referer isn't this local server. Requests with neither header (e.g. curl)
+// can't be driven by a malicious page, so they're allowed.
+function originAllowed(req) {
+  const src = req.headers.origin || req.headers.referer;
+  if (!src) return true;
+  try {
+    const h = new URL(src).hostname;
+    return h === "127.0.0.1" || h === "localhost" || h === "[::1]" || h === "::1";
+  } catch { return false; }
 }
 
 // --- HTML ---
@@ -141,14 +217,35 @@ const HTML = `<!DOCTYPE html>
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
   <style>
+    :root {
+      --bg: #0d0d1a; --surface: #15152a; --surface-2: #111120; --surface-3: #1a1a32;
+      --accent-bg: #1c1c38; --accent-count: #1e2550;
+      --border: #2a2a4a; --border-strong: #3a3a6a; --border-soft: #1e1e35; --border-faint: #1a1a30;
+      --text: #e0e0e0; --text-strong: #ffffff; --text-dim: #9a9ab0; --text-mid: #cccccc;
+      --text-faint: #4a4a65; --text-ghost: #555555; --placeholder: #3a3a55;
+      --accent: #7aa2f7; --accent-2: #bb9af7; --accent-soft: #c0caf5;
+      --card-border: rgba(255,255,255,0.06); --card-border-hover: rgba(255,255,255,0.12);
+      --shadow: rgba(0,0,0,0.3); --shadow-strong: rgba(0,0,0,0.35);
+    }
+    :root[data-ui-theme="light"] {
+      --bg: #eceef6; --surface: #ffffff; --surface-2: #f5f6fb; --surface-3: #e9ebf6;
+      --accent-bg: #e7ecfc; --accent-count: #dde6ff;
+      --border: #d4d8e8; --border-strong: #bcc2d8; --border-soft: #e3e6f1; --border-faint: #e7e9f3;
+      --text: #2c2e3e; --text-strong: #14151f; --text-dim: #5b5e74; --text-mid: #44475a;
+      --text-faint: #8b8fa6; --text-ghost: #9a9eb4; --placeholder: #a8acc0;
+      --accent: #4f74d8; --accent-2: #8c63d8; --accent-soft: #45599e;
+      --card-border: rgba(0,0,0,0.08); --card-border-hover: rgba(0,0,0,0.16);
+      --shadow: rgba(40,44,80,0.12); --shadow-strong: rgba(40,44,80,0.18);
+    }
     * { margin: 0; padding: 0; box-sizing: border-box; }
     body {
       min-height: 100vh;
       font-family: 'Inter', -apple-system, system-ui, sans-serif;
-      background: #0d0d1a;
-      color: #e0e0e0;
+      background: var(--bg);
+      color: var(--text);
       -webkit-font-smoothing: antialiased;
       -moz-osx-font-smoothing: grayscale;
+      transition: background 0.3s ease, color 0.3s ease;
     }
     .app {
       max-width: 900px;
@@ -158,24 +255,35 @@ const HTML = `<!DOCTYPE html>
     header {
       text-align: center;
       margin-bottom: 2.5rem;
+      position: relative;
     }
     h1 {
-      font-size: 1.6rem; color: #fff; margin-bottom: 0.35rem;
+      font-size: 1.6rem; color: var(--text-strong); margin-bottom: 0.35rem;
       font-weight: 700; letter-spacing: -0.02em;
     }
-    .subtitle { font-size: 0.82rem; color: #555; font-weight: 400; letter-spacing: 0.01em; }
+    .subtitle { font-size: 0.82rem; color: var(--text-ghost); font-weight: 400; letter-spacing: 0.01em; }
+
+    /* UI light/dark toggle */
+    .ui-toggle {
+      position: absolute; right: 0; top: 0;
+      background: var(--surface); border: 1px solid var(--border); color: var(--text-dim);
+      width: 34px; height: 34px; border-radius: 10px; cursor: pointer;
+      display: flex; align-items: center; justify-content: center; font-size: 0.95rem;
+      transition: all 0.2s ease;
+    }
+    .ui-toggle:hover { border-color: var(--accent); color: var(--text); }
 
     /* Terminal Preview */
     .terminal-preview {
       border-radius: 14px;
       overflow: hidden;
       margin-bottom: 1.75rem;
-      border: 1px solid #2a2a4a;
+      border: 1px solid var(--border);
       font-family: 'JetBrains Mono', 'Cascadia Code', 'Fira Code', monospace;
       font-size: 0.82rem;
       line-height: 1.6;
-      transition: all 0.35s ease;
-      box-shadow: 0 8px 32px rgba(0,0,0,0.3);
+      transition: background 0.35s ease, border-color 0.2s ease;
+      box-shadow: 0 8px 32px var(--shadow);
     }
     .terminal-titlebar {
       padding: 0.6rem 1rem;
@@ -194,6 +302,14 @@ const HTML = `<!DOCTYPE html>
     .terminal-body { padding: 1rem 1.3rem; }
     .terminal-body .line { white-space: pre; }
 
+    /* 16-color ANSI palette strip */
+    .palette-strip { display: flex; flex-direction: column; gap: 3px; padding: 0 1.3rem 1rem; }
+    .palette-row { display: flex; gap: 3px; }
+    .palette-row .pc {
+      flex: 1; height: 12px; border-radius: 3px;
+      box-shadow: inset 0 0 0 1px rgba(0,0,0,0.18);
+    }
+
     /* Controls row */
     .controls {
       display: flex;
@@ -204,7 +320,7 @@ const HTML = `<!DOCTYPE html>
       flex-wrap: wrap;
     }
     .btn {
-      border: 1px solid #2a2a4a;
+      border: 1px solid var(--border);
       border-radius: 12px;
       padding: 0.6rem 1.4rem;
       font-size: 0.8rem;
@@ -216,8 +332,9 @@ const HTML = `<!DOCTYPE html>
       user-select: none;
     }
     .btn:active { transform: scale(0.97); }
+    .btn[disabled] { opacity: 0.4; cursor: not-allowed; pointer-events: none; }
     .btn-primary {
-      background: linear-gradient(135deg, #7aa2f7, #bb9af7);
+      background: linear-gradient(135deg, var(--accent), var(--accent-2));
       color: #1a1b26;
       border: none;
       box-shadow: 0 2px 8px rgba(122,162,247,0.2);
@@ -229,14 +346,14 @@ const HTML = `<!DOCTYPE html>
     }
     .btn-primary:active { transform: translateY(0) scale(0.97); }
     .btn-secondary {
-      background: #15152a;
-      color: #9a9ab0;
+      background: var(--surface);
+      color: var(--text-dim);
     }
-    .btn-secondary:hover { border-color: #7aa2f7; color: #e0e0e0; background: #1a1a32; }
+    .btn-secondary:hover { border-color: var(--accent); color: var(--text); background: var(--surface-3); }
     .btn-secondary.active {
-      border-color: #bb9af7;
-      color: #bb9af7;
-      background: #1c1c38;
+      border-color: var(--accent-2);
+      color: var(--accent-2);
+      background: var(--accent-bg);
       box-shadow: 0 0 12px rgba(187,154,247,0.15);
     }
 
@@ -248,20 +365,20 @@ const HTML = `<!DOCTYPE html>
       margin-left: auto;
     }
     .font-controls label {
-      font-size: 0.65rem; color: #4a4a65; text-transform: uppercase;
+      font-size: 0.65rem; color: var(--text-faint); text-transform: uppercase;
       letter-spacing: 0.1em; font-weight: 600; margin-right: 2px;
     }
     .size-btn {
-      background: #15152a; border: 1px solid #2a2a4a; color: #9a9ab0;
+      background: var(--surface); border: 1px solid var(--border); color: var(--text-dim);
       width: 28px; height: 28px; border-radius: 8px; cursor: pointer;
       display: flex; align-items: center; justify-content: center;
       font-size: 0.9rem; font-weight: 500; transition: all 0.2s ease;
       font-family: 'Inter', system-ui, sans-serif;
     }
-    .size-btn:hover { border-color: #7aa2f7; color: #fff; background: #1a1a32; }
+    .size-btn:hover { border-color: var(--accent); color: var(--text-strong); background: var(--surface-3); }
     .size-btn:active { transform: scale(0.92); }
     .size-display {
-      font-size: 0.8rem; color: #e0e0e0; min-width: 24px; text-align: center;
+      font-size: 0.8rem; color: var(--text); min-width: 24px; text-align: center;
       font-weight: 600; font-variant-numeric: tabular-nums;
     }
 
@@ -270,59 +387,59 @@ const HTML = `<!DOCTYPE html>
       display: flex; align-items: center; gap: 8px;
     }
     .shuffle-select {
-      background: #15152a; border: 1px solid #2a2a4a; color: #9a9ab0;
+      background: var(--surface); border: 1px solid var(--border); color: var(--text-dim);
       padding: 0.45rem 0.65rem; border-radius: 10px; font-size: 0.78rem;
       font-family: 'Inter', system-ui, sans-serif; cursor: pointer;
       font-weight: 500; transition: all 0.2s ease;
     }
-    .shuffle-select:hover { border-color: #3a3a6a; color: #ccc; }
-    .shuffle-select:focus { outline: none; border-color: #7aa2f7; }
+    .shuffle-select:hover { border-color: var(--border-strong); color: var(--text-mid); }
+    .shuffle-select:focus { outline: none; border-color: var(--accent); }
 
     /* Opacity slider */
     .slider-row {
       display: flex; align-items: center; gap: 10px;
-      background: #111120; border: 1px solid #1e1e35;
+      background: var(--surface-2); border: 1px solid var(--border-soft);
       border-radius: 12px; padding: 0.6rem 1.1rem;
       margin-bottom: 1.75rem;
     }
     .slider-row label {
-      font-size: 0.65rem; color: #4a4a65; text-transform: uppercase;
+      font-size: 0.65rem; color: var(--text-faint); text-transform: uppercase;
       letter-spacing: 0.1em; flex-shrink: 0; font-weight: 600;
     }
     .slider-row input[type=range] {
       flex: 1; -webkit-appearance: none; appearance: none;
-      height: 4px; background: #2a2a4a; border-radius: 2px; outline: none;
+      height: 4px; background: var(--border); border-radius: 2px; outline: none;
     }
     .slider-row input[type=range]::-webkit-slider-thumb {
       -webkit-appearance: none; width: 16px; height: 16px;
-      border-radius: 50%; background: linear-gradient(135deg, #7aa2f7, #bb9af7);
-      cursor: pointer; border: 2px solid #0d0d1a;
+      border-radius: 50%; background: linear-gradient(135deg, var(--accent), var(--accent-2));
+      cursor: pointer; border: 2px solid var(--bg);
       box-shadow: 0 0 8px rgba(122,162,247,0.3);
     }
     .slider-row .slider-value {
-      font-size: 0.78rem; color: #c0caf5; min-width: 36px; text-align: right;
+      font-size: 0.78rem; color: var(--accent-soft); min-width: 36px; text-align: right;
       font-weight: 600; font-variant-numeric: tabular-nums;
     }
 
     /* Tabs */
     .tabs {
       display: flex; gap: 2px; margin-bottom: 1.1rem;
-      border-bottom: 1px solid #1a1a30;
+      border-bottom: 1px solid var(--border-faint);
       padding-bottom: 0;
     }
     .tab {
-      background: none; border: none; color: #4a4a65; padding: 0.65rem 1.1rem;
+      background: none; border: none; color: var(--text-faint); padding: 0.65rem 1.1rem;
       font-size: 0.78rem; cursor: pointer; font-family: 'Inter', system-ui, sans-serif;
       font-weight: 500; border-bottom: 2px solid transparent; transition: all 0.2s ease;
     }
-    .tab:hover { color: #9a9ab0; }
-    .tab.active { color: #e0e0e0; border-bottom-color: #7aa2f7; }
+    .tab:hover { color: var(--text-dim); }
+    .tab.active { color: var(--text); border-bottom-color: var(--accent); }
     .tab .count {
-      background: #1a1a30; color: #555; font-size: 0.6rem;
+      background: var(--border-faint); color: var(--text-ghost); font-size: 0.6rem;
       padding: 2px 7px; border-radius: 10px; margin-left: 6px;
       font-weight: 600; font-variant-numeric: tabular-nums;
     }
-    .tab.active .count { background: #1e2550; color: #7aa2f7; }
+    .tab.active .count { background: var(--accent-count); color: var(--accent); }
 
     /* Search + filters */
     .search-row {
@@ -330,9 +447,9 @@ const HTML = `<!DOCTYPE html>
     }
     .search-bar {
       flex: 1;
-      background: #111120;
-      border: 1px solid #2a2a4a;
-      color: #e0e0e0;
+      background: var(--surface-2);
+      border: 1px solid var(--border);
+      color: var(--text);
       padding: 0.6rem 1rem;
       border-radius: 12px;
       font-size: 0.82rem;
@@ -341,19 +458,19 @@ const HTML = `<!DOCTYPE html>
       transition: border-color 0.2s ease, box-shadow 0.2s ease;
     }
     .search-bar:focus {
-      outline: none; border-color: #7aa2f7;
+      outline: none; border-color: var(--accent);
       box-shadow: 0 0 0 3px rgba(122,162,247,0.1);
     }
-    .search-bar::placeholder { color: #3a3a55; }
+    .search-bar::placeholder { color: var(--placeholder); }
     .filter-pills { display: flex; gap: 4px; flex-shrink: 0; }
     .filter-pill {
-      background: #15152a; border: 1px solid #2a2a4a; color: #4a4a65;
+      background: var(--surface); border: 1px solid var(--border); color: var(--text-faint);
       padding: 0.45rem 0.8rem; border-radius: 10px; font-size: 0.72rem;
       cursor: pointer; font-family: 'Inter', system-ui, sans-serif;
       font-weight: 600; transition: all 0.2s ease; letter-spacing: 0.02em;
     }
-    .filter-pill:hover { color: #9a9ab0; border-color: #3a3a6a; }
-    .filter-pill.active { background: #1c1c38; color: #c0caf5; border-color: #7aa2f7; }
+    .filter-pill:hover { color: var(--text-dim); border-color: var(--border-strong); }
+    .filter-pill.active { background: var(--accent-bg); color: var(--accent-soft); border-color: var(--accent); }
 
     /* Scheme grid */
     .scheme-grid {
@@ -366,10 +483,10 @@ const HTML = `<!DOCTYPE html>
     }
     .scheme-grid::-webkit-scrollbar { width: 5px; }
     .scheme-grid::-webkit-scrollbar-track { background: transparent; }
-    .scheme-grid::-webkit-scrollbar-thumb { background: #2a2a4a; border-radius: 4px; }
+    .scheme-grid::-webkit-scrollbar-thumb { background: var(--border); border-radius: 4px; }
 
     .scheme-card {
-      border: 2px solid rgba(255,255,255,0.06);
+      border: 2px solid var(--card-border);
       border-radius: 12px;
       padding: 0.6rem 0.85rem;
       cursor: pointer;
@@ -381,11 +498,11 @@ const HTML = `<!DOCTYPE html>
     }
     .scheme-card:hover {
       transform: translateY(-2px);
-      box-shadow: 0 6px 16px rgba(0,0,0,0.35);
-      border-color: rgba(255,255,255,0.12);
+      box-shadow: 0 6px 16px var(--shadow-strong);
+      border-color: var(--card-border-hover);
     }
     .scheme-card.active {
-      border-color: #7aa2f7;
+      border-color: var(--accent);
       box-shadow: 0 0 20px rgba(122,162,247,0.3), inset 0 0 24px rgba(122,162,247,0.06);
     }
     .scheme-card .active-badge {
@@ -434,15 +551,15 @@ const HTML = `<!DOCTYPE html>
     .install-btn:hover { background: rgba(122,162,247,0.2); border-color: #7aa2f7; }
 
     /* Loading */
-    .loading { text-align: center; padding: 2rem; color: #555; font-size: 0.85rem; }
-    .spinner { display: inline-block; width: 16px; height: 16px; border: 2px solid #333; border-top-color: #7aa2f7; border-radius: 50%; animation: spin 0.6s linear infinite; margin-right: 8px; vertical-align: middle; }
+    .loading { text-align: center; padding: 2rem; color: var(--text-ghost); font-size: 0.85rem; }
+    .spinner { display: inline-block; width: 16px; height: 16px; border: 2px solid var(--border); border-top-color: var(--accent); border-radius: 50%; animation: spin 0.6s linear infinite; margin-right: 8px; vertical-align: middle; }
     @keyframes spin { to { transform: rotate(360deg); } }
 
     /* Toast */
     .toast {
       position: fixed; bottom: 2rem; left: 50%;
       transform: translateX(-50%) translateY(100px);
-      background: linear-gradient(135deg, #7aa2f7, #bb9af7);
+      background: linear-gradient(135deg, var(--accent), var(--accent-2));
       color: #1a1b26;
       padding: 0.6rem 1.6rem; border-radius: 12px;
       font-weight: 600; font-size: 0.78rem;
@@ -458,6 +575,7 @@ const HTML = `<!DOCTYPE html>
 <body>
 <div class="app">
   <header>
+    <button class="ui-toggle" id="ui-toggle" onclick="toggleUiTheme()" title="Toggle light / dark UI">&#9789;</button>
     <h1>The Terminalizer</h1>
     <p class="subtitle">Randomize, preview, and hot-swap your Windows Terminal themes</p>
   </header>
@@ -471,12 +589,16 @@ const HTML = `<!DOCTYPE html>
       <span id="tp-name">Loading...</span>
     </div>
     <div class="terminal-body" id="tp-body"></div>
+    <div class="palette-strip" id="tp-palette"></div>
   </div>
 
   <!-- Controls -->
   <div class="controls">
-    <button class="btn btn-primary" onclick="randomize()">Randomize</button>
-    <button class="btn btn-secondary" id="undo-btn" onclick="undoTheme()" style="display:none" title="Go back to previous theme">Undo</button>
+    <button class="btn btn-primary" onclick="randomize()" title="Switch to a random installed theme (Space)">Randomize</button>
+    <button class="btn btn-secondary" id="randfav-btn" onclick="randomFav()" title="Switch to a random favorite">&#9733; Random fav</button>
+    <button class="btn btn-secondary" id="surprise-btn" onclick="surprise()" title="Install &amp; apply a random theme from all 515+">&#127922; Surprise me</button>
+    <button class="btn btn-secondary" id="undo-btn" onclick="undoTheme()" style="display:none" title="Undo (U)">&#8634; Undo</button>
+    <button class="btn btn-secondary" id="redo-btn" onclick="redoTheme()" style="display:none" title="Redo (R)">&#8635; Redo</button>
     <div class="shuffle-row">
       <button class="btn btn-secondary" id="shuffle-btn" onclick="toggleShuffle()">Auto-shuffle</button>
       <select class="shuffle-select" id="shuffle-interval" onchange="updateShuffle()">
@@ -523,6 +645,11 @@ const HTML = `<!DOCTYPE html>
       <button class="filter-pill" data-filter="dark" onclick="setFilter('dark')">Dark</button>
       <button class="filter-pill" data-filter="light" onclick="setFilter('light')">Light</button>
     </div>
+    <select class="shuffle-select" id="sort-select" onchange="setSort(this.value)" title="Sort themes">
+      <option value="az">A&ndash;Z</option>
+      <option value="brightness">Brightness</option>
+      <option value="hue">Hue</option>
+    </select>
   </div>
 
   <div class="scheme-grid" id="scheme-grid"></div>
@@ -535,15 +662,22 @@ const HTML = `<!DOCTYPE html>
   let externalIndex = [];
   let favorites = [];
   let currentScheme = "";
-  let previousScheme = "";
   let currentSize = 13;
   let activeTab = "installed";
   let activeFilter = "all";
+  let activeSort = "az";
   let shuffleActive = false;
   let shuffleFavsOnly = false;
   let currentOpacity = 95;
   let externalLoaded = false;
   let opacityTimer = null;
+  let history = [];   // applied scheme names, oldest -> newest
+  let histIndex = -1; // current position in history
+
+  function esc(str) {
+    return String(str == null ? "" : str).replace(/[&<>"']/g, c =>
+      ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
+  }
 
   function isLightTheme(s) {
     if (!s || !s.background) return false;
@@ -565,6 +699,34 @@ const HTML = `<!DOCTYPE html>
     renderGrid();
   }
 
+  function brightness(s) {
+    if (!s || !s.background) return 0;
+    const h = s.background.replace("#", "");
+    const r = parseInt(h.substr(0, 2), 16) || 0, g = parseInt(h.substr(2, 2), 16) || 0, b = parseInt(h.substr(4, 2), 16) || 0;
+    return (r * 299 + g * 587 + b * 114) / 1000;
+  }
+  function hue(s) {
+    const c = (s && (s.blue || s.green || s.red || s.foreground || s.background)) || "#000000";
+    const h = c.replace("#", "");
+    const r = (parseInt(h.substr(0, 2), 16) || 0) / 255, g = (parseInt(h.substr(2, 2), 16) || 0) / 255, b = (parseInt(h.substr(4, 2), 16) || 0) / 255;
+    const mx = Math.max(r, g, b), mn = Math.min(r, g, b), d = mx - mn;
+    if (d === 0) return 0;
+    let hh;
+    if (mx === r) hh = ((g - b) / d) % 6;
+    else if (mx === g) hh = (b - r) / d + 2;
+    else hh = (r - g) / d + 4;
+    hh *= 60;
+    return hh < 0 ? hh + 360 : hh;
+  }
+  function sortSchemes(list) {
+    const arr = list.slice();
+    if (activeSort === "brightness") arr.sort((a, b) => brightness(a) - brightness(b));
+    else if (activeSort === "hue") arr.sort((a, b) => hue(a) - hue(b));
+    else arr.sort((a, b) => a.name.localeCompare(b.name));
+    return arr;
+  }
+  function setSort(v) { activeSort = v; renderGrid(); }
+
   async function fetchState() {
     const res = await fetch("/api/state");
     const data = await res.json();
@@ -585,6 +747,9 @@ const HTML = `<!DOCTYPE html>
     document.getElementById("font-size").textContent = currentSize;
     document.getElementById("opacity-slider").value = currentOpacity;
     document.getElementById("opacity-value").textContent = currentOpacity + "%";
+    history = [currentScheme];
+    histIndex = 0;
+    updateHistButtons();
     renderPreview();
     renderGrid();
   }
@@ -601,26 +766,38 @@ const HTML = `<!DOCTYPE html>
     document.getElementById("tp-name").textContent = currentScheme;
     document.getElementById("tp-name").style.color = s.foreground;
 
+    // Escape color values before concatenating into innerHTML (a malformed scheme color can't inject markup)
+    const fg = esc(s.foreground), green = esc(s.green), blue = esc(s.blue),
+      cyan = esc(s.cyan), yellow = esc(s.yellow), purple = esc(s.purple), red = esc(s.red);
     body.innerHTML =
-      '<div class="line"><span style="color:' + s.green + '">maram@dev</span>' +
-      '<span style="color:' + s.foreground + '">:</span>' +
-      '<span style="color:' + s.blue + '">~/projects</span>' +
-      '<span style="color:' + s.foreground + '">$ </span>' +
-      '<span style="color:' + s.foreground + '">node server.js</span></div>' +
-      '<div class="line"><span style="color:' + s.cyan + '">INFO</span>' +
-      '<span style="color:' + s.foreground + '">  Server running on port </span>' +
-      '<span style="color:' + s.yellow + '">3456</span></div>' +
-      '<div class="line"><span style="color:' + s.green + '">OK</span>' +
-      '<span style="color:' + s.foreground + '">    Loaded </span>' +
-      '<span style="color:' + s.purple + '">12 routes</span></div>' +
-      '<div class="line"><span style="color:' + s.red + '">WARN</span>' +
-      '<span style="color:' + s.foreground + '">  No .env file found, using defaults</span></div>' +
-      '<div class="line"><span style="color:' + s.green + '">maram@dev</span>' +
-      '<span style="color:' + s.foreground + '">:</span>' +
-      '<span style="color:' + s.blue + '">~/projects</span>' +
-      '<span style="color:' + s.yellow + '"> (main) </span>' +
-      '<span style="color:' + s.foreground + '">$ </span>' +
-      '<span style="color:' + s.foreground + '; opacity: 0.4">_</span></div>';
+      '<div class="line"><span style="color:' + green + '">maram@dev</span>' +
+      '<span style="color:' + fg + '">:</span>' +
+      '<span style="color:' + blue + '">~/projects</span>' +
+      '<span style="color:' + fg + '">$ </span>' +
+      '<span style="color:' + fg + '">node server.js</span></div>' +
+      '<div class="line"><span style="color:' + cyan + '">INFO</span>' +
+      '<span style="color:' + fg + '">  Server running on port </span>' +
+      '<span style="color:' + yellow + '">3456</span></div>' +
+      '<div class="line"><span style="color:' + green + '">OK</span>' +
+      '<span style="color:' + fg + '">    Loaded </span>' +
+      '<span style="color:' + purple + '">12 routes</span></div>' +
+      '<div class="line"><span style="color:' + red + '">WARN</span>' +
+      '<span style="color:' + fg + '">  No .env file found, using defaults</span></div>' +
+      '<div class="line"><span style="color:' + green + '">maram@dev</span>' +
+      '<span style="color:' + fg + '">:</span>' +
+      '<span style="color:' + blue + '">~/projects</span>' +
+      '<span style="color:' + yellow + '"> (main) </span>' +
+      '<span style="color:' + fg + '">$ </span>' +
+      '<span style="color:' + fg + '; opacity: 0.4">_</span></div>';
+
+    // 16-color ANSI palette strip (normal row + bright row)
+    const normal = ["black", "red", "green", "yellow", "blue", "purple", "cyan", "white"];
+    const bright = normal.map(k => "bright" + k.charAt(0).toUpperCase() + k.slice(1));
+    const swatch = keys => keys.map(k =>
+      '<div class="pc" style="background:' + esc(s[k] || "transparent") + '"></div>').join("");
+    document.getElementById("tp-palette").innerHTML =
+      '<div class="palette-row">' + swatch(normal) + '</div>' +
+      '<div class="palette-row">' + swatch(bright) + '</div>';
   }
 
   function renderGrid() {
@@ -629,12 +806,12 @@ const HTML = `<!DOCTYPE html>
     let items = [];
 
     if (activeTab === "installed") {
-      items = filterSchemes(installedSchemes)
-        .filter(s => s.name.toLowerCase().includes(query))
+      items = sortSchemes(filterSchemes(installedSchemes)
+        .filter(s => s.name.toLowerCase().includes(query)))
         .map(s => schemeCard(s));
     } else if (activeTab === "favorites") {
-      items = filterSchemes(installedSchemes)
-        .filter(s => favorites.includes(s.name) && s.name.toLowerCase().includes(query))
+      items = sortSchemes(filterSchemes(installedSchemes)
+        .filter(s => favorites.includes(s.name) && s.name.toLowerCase().includes(query)))
         .map(s => schemeCard(s));
     } else if (activeTab === "explore") {
       if (!externalLoaded) {
@@ -654,24 +831,21 @@ const HTML = `<!DOCTYPE html>
   function schemeCard(s) {
     const isActive = s.name === currentScheme ? " active" : "";
     const isFav = favorites.includes(s.name);
-    const safeName = s.name.replace(/'/g, "\\\\'");
     const colors = [s.red, s.green, s.blue, s.yellow, s.purple, s.cyan].filter(Boolean);
     const bg = s.background || "#13131f";
     const fg = s.foreground || "#ccc";
-    return '<div class="scheme-card' + isActive + '" style="background:' + bg + ';" onclick="pickScheme(\\'' + safeName + '\\')">' +
+    return '<div class="scheme-card' + isActive + '" data-name="' + esc(s.name) + '" style="background:' + esc(bg) + ';">' +
       '<div class="active-badge">&#10003;</div>' +
-      '<div class="scheme-colors">' + colors.map(c => '<div class="c" style="background:' + c + '"></div>').join("") + '</div>' +
-      '<div class="scheme-name" style="color:' + fg + '">' + s.name + '</div>' +
-      '<button class="fav-btn' + (isFav ? ' favorited' : '') + '" onclick="event.stopPropagation();toggleFav(\\'' + safeName + '\\')">' +
+      '<div class="scheme-colors">' + colors.map(c => '<div class="c" style="background:' + esc(c) + '"></div>').join("") + '</div>' +
+      '<div class="scheme-name" style="color:' + esc(fg) + '">' + esc(s.name) + '</div>' +
+      '<button class="fav-btn' + (isFav ? ' favorited' : '') + '" data-fav="' + esc(s.name) + '" title="Toggle favorite">' +
       (isFav ? "&#9733;" : "&#9734;") + '</button></div>';
   }
 
   function externalCard(t) {
-    const safeName = t.name.replace(/'/g, "\\\\'");
-    const safeUrl = t.download_url.replace(/'/g, "\\\\'");
-    return '<div class="scheme-card">' +
-      '<div class="scheme-name">' + t.name + '</div>' +
-      '<button class="install-btn" onclick="event.stopPropagation();installTheme(\\'' + safeName + '\\',\\'' + safeUrl + '\\')">+ Install</button></div>';
+    return '<div class="scheme-card" data-ext-name="' + esc(t.name) + '" data-ext-url="' + esc(t.download_url) + '">' +
+      '<div class="scheme-name">' + esc(t.name) + '</div>' +
+      '<button class="install-btn">+ Install &amp; Apply</button></div>';
   }
 
   async function loadExternal() {
@@ -682,42 +856,89 @@ const HTML = `<!DOCTYPE html>
     renderGrid();
   }
 
-  function updateUndoBtn() {
-    document.getElementById("undo-btn").style.display = previousScheme ? "inline-block" : "none";
+  function updateHistButtons() {
+    document.getElementById("undo-btn").style.display = histIndex > 0 ? "inline-block" : "none";
+    document.getElementById("redo-btn").style.display = histIndex < history.length - 1 ? "inline-block" : "none";
+  }
+
+  // Record an applied scheme onto the history stack (truncating any redo tail).
+  function recordHistory(name) {
+    if (history[histIndex] === name) { updateHistButtons(); return; }
+    history = history.slice(0, histIndex + 1);
+    history.push(name);
+    if (history.length > 50) history.shift();
+    histIndex = history.length - 1;
+    updateHistButtons();
+  }
+
+  async function setSchemeServer(name) {
+    const res = await fetch("/api/set-scheme", {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ name })
+    });
+    return res.json();
   }
 
   async function randomize() {
-    previousScheme = currentScheme;
     const res = await fetch("/api/randomize", { method: "POST" });
     const data = await res.json();
     currentScheme = data.scheme;
-    updateUndoBtn();
-    const existing = installedSchemes.find(s => s.name === data.scheme);
-    if (existing) { renderPreview(); renderGrid(); }
+    recordHistory(currentScheme);
+    renderPreview();
+    renderGrid();
     showToast("Switched to " + data.scheme);
   }
 
   async function pickScheme(name) {
-    previousScheme = currentScheme;
-    const res = await fetch("/api/set-scheme", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ name })
-    });
-    const data = await res.json();
+    const data = await setSchemeServer(name);
+    if (data.error) { showToast(data.error); return; }
     currentScheme = data.scheme;
-    updateUndoBtn();
+    recordHistory(currentScheme);
     renderPreview();
     renderGrid();
     showToast(data.scheme);
   }
 
   async function undoTheme() {
-    if (!previousScheme) return;
-    const temp = currentScheme;
-    await pickScheme(previousScheme);
-    previousScheme = temp;
-    updateUndoBtn();
+    if (histIndex <= 0) return;
+    const name = history[--histIndex];
+    await setSchemeServer(name);
+    currentScheme = name;
+    renderPreview();
+    renderGrid();
+    updateHistButtons();
+    showToast("Undo → " + name);
+  }
+
+  async function redoTheme() {
+    if (histIndex >= history.length - 1) return;
+    const name = history[++histIndex];
+    await setSchemeServer(name);
+    currentScheme = name;
+    renderPreview();
+    renderGrid();
+    updateHistButtons();
+    showToast("Redo → " + name);
+  }
+
+  async function randomFav() {
+    const installedFavs = favorites.filter(n => installedSchemes.some(s => s.name === n));
+    if (installedFavs.length === 0) { showToast("No favorites yet — star some themes"); return; }
+    const pool = installedFavs.filter(n => n !== currentScheme);
+    const from = pool.length ? pool : installedFavs;
+    await pickScheme(from[Math.floor(Math.random() * from.length)]);
+  }
+
+  async function surprise() {
+    showToast("Finding a surprise…");
+    if (!externalLoaded) await loadExternal();
+    const installedNames = new Set(installedSchemes.map(s => s.name));
+    const pool = externalIndex.filter(t => !installedNames.has(t.name));
+    if (pool.length === 0) { await randomize(); return; }
+    const t = pool[Math.floor(Math.random() * pool.length)];
+    const scheme = await installThemeData(t.name, t.download_url);
+    if (scheme) await pickScheme(scheme.name);
+    else showToast("Couldn't fetch that one — try again");
   }
 
   async function toggleFav(name) {
@@ -730,12 +951,11 @@ const HTML = `<!DOCTYPE html>
     favorites = data.favorites;
     document.getElementById("favorites-count").textContent = favorites.length;
     renderGrid();
+    showToast(favorites.includes(name) ? "★ Favorited " + name : "Unfavorited " + name);
   }
 
-  async function installTheme(name, url) {
-    const btn = event.target;
-    btn.textContent = "...";
-    btn.disabled = true;
+  // Install a theme into settings.json; returns the slim scheme (or null) and updates local state.
+  async function installThemeData(name, url) {
     const res = await fetch("/api/install-theme", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
@@ -745,9 +965,34 @@ const HTML = `<!DOCTYPE html>
     if (data.scheme) {
       installedSchemes.push(data.scheme);
       document.getElementById("installed-count").textContent = installedSchemes.length;
-      renderGrid();
-      showToast("Installed " + name);
+      return data.scheme;
     }
+    return null;
+  }
+
+  // Explore-tab handler: install the theme, then immediately apply it.
+  async function installTheme(name, url, btn) {
+    btn.textContent = "…";
+    btn.disabled = true;
+    const scheme = await installThemeData(name, url);
+    if (scheme) {
+      showToast("Installed " + name);
+      await pickScheme(scheme.name);
+    } else {
+      btn.textContent = "+ Install & Apply";
+      btn.disabled = false;
+      showToast("Install failed");
+    }
+  }
+
+  function toggleUiTheme() {
+    const next = document.documentElement.getAttribute("data-ui-theme") === "light" ? "dark" : "light";
+    try { localStorage.setItem("terminalizer-ui-theme", next); } catch (e) {}
+    applyUiTheme(next);
+  }
+  function applyUiTheme(theme) {
+    document.documentElement.setAttribute("data-ui-theme", theme);
+    document.getElementById("ui-toggle").innerHTML = theme === "light" ? "☀" : "☽";
   }
 
   async function changeSize(delta) {
@@ -826,17 +1071,52 @@ const HTML = `<!DOCTYPE html>
     setTimeout(() => t.classList.remove("show"), 1800);
   }
 
-  // Poll for shuffle changes
+  // Delegated grid clicks (cards rendered as innerHTML carry data-* attributes, no inline JS)
+  document.getElementById("scheme-grid").addEventListener("click", (e) => {
+    const favBtn = e.target.closest(".fav-btn");
+    if (favBtn) { e.stopPropagation(); toggleFav(favBtn.dataset.fav); return; }
+    const installBtn = e.target.closest(".install-btn");
+    if (installBtn) {
+      const card = installBtn.closest(".scheme-card");
+      installTheme(card.dataset.extName, card.dataset.extUrl, installBtn);
+      return;
+    }
+    const card = e.target.closest(".scheme-card[data-name]");
+    if (card) pickScheme(card.dataset.name);
+  });
+
+  // Poll for shuffle changes (so undo works after an auto-shuffle pick too)
   setInterval(async () => {
     if (!shuffleActive) return;
     const res = await fetch("/api/current");
     const data = await res.json();
     if (data.current !== currentScheme) {
       currentScheme = data.current;
+      recordHistory(currentScheme);
       renderPreview();
       renderGrid();
     }
   }, 5000);
+
+  // Keyboard shortcuts: Space = randomize, U = undo, R = redo, F = favorite current, / = search
+  document.addEventListener("keydown", (e) => {
+    const tag = (e.target.tagName || "").toLowerCase();
+    const typing = tag === "input" || tag === "textarea" || tag === "select";
+    if (e.key === "/" && !typing) { e.preventDefault(); document.getElementById("search").focus(); return; }
+    if (typing) { if (e.key === "Escape") e.target.blur(); return; }
+    if (e.metaKey || e.ctrlKey || e.altKey) return;
+    if (e.code === "Space") { e.preventDefault(); randomize(); }
+    else if (e.key === "u" || e.key === "U") undoTheme();
+    else if (e.key === "r" || e.key === "R") redoTheme();
+    else if (e.key === "f" || e.key === "F") { if (currentScheme) toggleFav(currentScheme); }
+  });
+
+  // Restore saved UI theme (default dark) before first paint of state
+  (function () {
+    let saved = "dark";
+    try { saved = localStorage.getItem("terminalizer-ui-theme") || "dark"; } catch (e) {}
+    applyUiTheme(saved);
+  })();
 
   fetchState();
 </script>
@@ -853,6 +1133,13 @@ const server = http.createServer(async (req, res) => {
     res.end(JSON.stringify(data));
   };
 
+  try {
+
+  if (req.method === "POST" && !originAllowed(req)) {
+    json({ error: "Forbidden" }, 403);
+    return;
+  }
+
   if (route === "GET /") {
     res.writeHead(200, { "Content-Type": "text/html" });
     res.end(HTML);
@@ -861,11 +1148,7 @@ const server = http.createServer(async (req, res) => {
 
   if (route === "GET /api/state") {
     const settings = readSettings();
-    const schemes = settings.schemes.map((s) => ({
-      name: s.name, background: s.background, foreground: s.foreground,
-      red: s.red, green: s.green, blue: s.blue, yellow: s.yellow,
-      purple: s.purple, cyan: s.cyan, brightBlack: s.brightBlack,
-    }));
+    const schemes = settings.schemes.map(slimScheme);
     json({
       schemes,
       current: getCurrentScheme(settings),
@@ -888,6 +1171,7 @@ const server = http.createServer(async (req, res) => {
     const names = settings.schemes.map((s) => s.name);
     const current = getCurrentScheme(settings);
     const others = names.filter((n) => n !== current);
+    if (others.length === 0) { json({ scheme: current }); return; }
     const pick = others[Math.floor(Math.random() * others.length)];
     settings.profiles.defaults.colorScheme = pick;
     writeSettings(settings);
@@ -963,6 +1247,7 @@ const server = http.createServer(async (req, res) => {
   if (route === "POST /api/install-theme") {
     const { name, url: themeUrl } = await parseBody(req);
     try {
+      if (!isAllowedThemeUrl(themeUrl)) { json({ error: "Disallowed theme URL" }, 400); return; }
       const theme = await fetchExternalTheme(themeUrl);
       if (!theme) { json({ error: "Failed to fetch" }, 500); return; }
       const settings = readSettings();
@@ -972,13 +1257,7 @@ const server = http.createServer(async (req, res) => {
       }
       settings.schemes.push(theme);
       writeSettings(settings);
-      json({
-        scheme: {
-          name: theme.name, background: theme.background, foreground: theme.foreground,
-          red: theme.red, green: theme.green, blue: theme.blue, yellow: theme.yellow,
-          purple: theme.purple, cyan: theme.cyan, brightBlack: theme.brightBlack,
-        },
-      });
+      json({ scheme: slimScheme(theme) });
     } catch (e) {
       json({ error: e.message }, 500);
     }
@@ -987,8 +1266,15 @@ const server = http.createServer(async (req, res) => {
 
   res.writeHead(404);
   res.end("Not found");
+
+  } catch (e) {
+    // Any thrown error (e.g. settings.json missing/unreadable) becomes a clean 500
+    // instead of an unhandled rejection that hangs the request.
+    if (!res.headersSent) json({ error: e.message }, 500);
+    else res.end();
+  }
 });
 
-server.listen(PORT, () => {
+server.listen(PORT, HOST, () => {
   console.log(`The Terminalizer running at http://localhost:${PORT}`);
 });
