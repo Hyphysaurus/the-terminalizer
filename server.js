@@ -1217,6 +1217,64 @@ const HTML = `<!DOCTYPE html>
   let progress = { discovered: [], achievements: [], xp: 0 };
   let totalSchemes = 0;
 
+  // --- Synthesized SFX (Web Audio, zero files) ---
+  const sfx = (function () {
+    let ctx = null, master = null, hum = null;
+    let enabled = true;
+    try { enabled = localStorage.getItem("terminalizer-sound") !== "off"; } catch (e) {}
+
+    function ensure() {
+      if (ctx) return;
+      const AC = window.AudioContext || window.webkitAudioContext;
+      if (!AC) { enabled = false; return; }
+      ctx = new AC();
+      master = ctx.createGain();
+      master.gain.value = 0.18;
+      master.connect(ctx.destination);
+    }
+    function blip(freq, dur, type, gain) {
+      if (!enabled) return;
+      ensure(); if (!ctx) return;
+      const o = ctx.createOscillator(), g = ctx.createGain();
+      o.type = type || "square"; o.frequency.value = freq;
+      g.gain.setValueAtTime(0.0001, ctx.currentTime);
+      g.gain.exponentialRampToValueAtTime(gain || 0.3, ctx.currentTime + 0.005);
+      g.gain.exponentialRampToValueAtTime(0.0001, ctx.currentTime + (dur || 0.08));
+      o.connect(g); g.connect(master);
+      o.start(); o.stop(ctx.currentTime + (dur || 0.08) + 0.02);
+    }
+    function startHum() {
+      if (!enabled || hum) return;
+      ensure(); if (!ctx) return;
+      const o = ctx.createOscillator(), g = ctx.createGain();
+      o.type = "sawtooth"; o.frequency.value = 54;
+      g.gain.value = 0.03; o.connect(g); g.connect(master); o.start();
+      hum = { o: o, g: g };
+    }
+    function stopHum() { if (hum) { try { hum.o.stop(); } catch (e) {} hum = null; } }
+
+    return {
+      arm: function () { if (!enabled) return; ensure(); if (ctx && ctx.state === "suspended") ctx.resume(); startHum(); },
+      hover: function () { blip(880, 0.04, "sine", 0.06); },
+      tick: function () { blip(320 + Math.random() * 80, 0.03, "square", 0.12); },
+      lock: function (tier) {
+        const big = tier === "Legendary" || tier === "Epic";
+        blip(140, 0.18, "sawtooth", 0.35);
+        if (big) setTimeout(function () { blip(660, 0.25, "triangle", 0.25); }, 60);
+      },
+      confirm: function () { blip(520, 0.1, "triangle", 0.22); setTimeout(function () { blip(780, 0.1, "triangle", 0.18); }, 70); },
+      favorite: function () { blip(660, 0.08, "sine", 0.2); setTimeout(function () { blip(990, 0.12, "sine", 0.18); }, 60); },
+      achievement: function () { [523, 659, 784, 1047].forEach(function (f, i) { setTimeout(function () { blip(f, 0.16, "triangle", 0.22); }, i * 90); }); },
+      isEnabled: function () { return enabled; },
+      setEnabled: function (v) {
+        enabled = v;
+        try { localStorage.setItem("terminalizer-sound", v ? "on" : "off"); } catch (e) {}
+        if (v) this.arm(); else stopHum();
+      }
+    };
+  })();
+  window.sfx = sfx;
+
   function hex6(v) { return /^#[0-9a-fA-F]{6}$/.test(v || "") ? v : null; }
 
   function esc(str) {
@@ -1504,6 +1562,7 @@ const HTML = `<!DOCTYPE html>
     const data = await setSchemeServer(name);
     if (data.error) { showToast(data.error); return; }
     currentScheme = data.scheme;
+    if (window.sfx) sfx.confirm();
     discover(currentScheme);
     recordHistory(currentScheme);
     renderPreview();
@@ -1563,6 +1622,7 @@ const HTML = `<!DOCTYPE html>
     });
     const data = await res.json();
     favorites = data.favorites;
+    if (window.sfx && favorites.includes(name)) sfx.favorite();
     if (data.progress) applyProgress(data.progress);
     achievementToast(data.newlyUnlocked);
     document.getElementById("favorites-count").textContent = favorites.length;
@@ -1726,6 +1786,14 @@ const HTML = `<!DOCTYPE html>
     document.getElementById("hud-xp-val").textContent = progress.xp;
   }
 
+  function toggleSound() {
+    sfx.setEnabled(!sfx.isEnabled());
+    const btn = document.getElementById("sound-toggle");
+    btn.classList.toggle("muted", !sfx.isEnabled());
+    btn.textContent = sfx.isEnabled() ? "♪" : "♪̶";
+    showToast(sfx.isEnabled() ? "Sound on" : "Sound off");
+  }
+
   function achievementToast(list) {
     if (!list || !list.length) return;
     list.forEach((a, i) => setTimeout(() => {
@@ -1802,6 +1870,23 @@ const HTML = `<!DOCTYPE html>
     try { saved = localStorage.getItem("terminalizer-ui-theme") || "dark"; } catch (e) {}
     applyUiTheme(saved);
   })();
+
+  // Browser autoplay policy: audio can only start after a user gesture.
+  function armAudioOnce() {
+    sfx.arm();
+    window.removeEventListener("pointerdown", armAudioOnce);
+    window.removeEventListener("keydown", armAudioOnce);
+  }
+  window.addEventListener("pointerdown", armAudioOnce);
+  window.addEventListener("keydown", armAudioOnce);
+  (function () {
+    const btn = document.getElementById("sound-toggle");
+    if (btn) { btn.classList.toggle("muted", !sfx.isEnabled()); btn.textContent = sfx.isEnabled() ? "♪" : "♪̶"; }
+  })();
+
+  document.querySelectorAll(".btn, .tab, .filter-pill").forEach(function (el) {
+    el.addEventListener("pointerenter", function () { if (window.sfx) sfx.hover(); });
+  });
 
   fetchState();
 </script>
