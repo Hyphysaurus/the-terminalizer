@@ -1043,6 +1043,16 @@ const HTML = `<!DOCTYPE html>
     .rarity.Epic      { color:#c06bff; }
     .rarity.Legendary { color:#ffcf3f; }
     .card-rarity { position:absolute; left:8px; top:8px; z-index:2; }
+
+    .hud-strip { display:flex; gap:14px; align-items:center; justify-content:center; margin-top:0.85rem;
+      font-family:'JetBrains Mono', monospace; font-size:0.72rem; color:var(--text-dim); flex-wrap:wrap; }
+    .hud-stat { display:inline-flex; gap:4px; align-items:center; padding:3px 9px; border-radius:6px;
+      border:1px solid var(--border); background:var(--surface-2); }
+    .hud-stat b { color:var(--accent); font-weight:700; }
+    .hud-sub { color:var(--text-faint); }
+    .hud-sound { cursor:pointer; border:1px solid var(--border); background:var(--surface-2);
+      color:var(--accent); border-radius:6px; padding:3px 9px; font-size:0.8rem; line-height:1; }
+    .hud-sound.muted { color:var(--text-ghost); }
   </style>
 </head>
 <body>
@@ -1069,6 +1079,12 @@ const HTML = `<!DOCTYPE html>
     <h1>The Terminalizer</h1>
     <p class="subtitle">Randomize, preview, and hot-swap your Windows Terminal themes</p>
     <div class="red-scanner" aria-hidden="true"><span class="led"></span></div>
+    <div class="hud-strip" id="hud-strip" aria-live="polite">
+      <span class="hud-stat" title="Themes discovered">◈ <b id="hud-discovered">0</b><span class="hud-sub"> / <span id="hud-total">0</span></span></span>
+      <span class="hud-stat" title="Level">LVL <b id="hud-level">1</b></span>
+      <span class="hud-stat" id="hud-xp" title="XP">XP <b id="hud-xp-val">0</b></span>
+      <button class="hud-sound" id="sound-toggle" title="Toggle sound" onclick="toggleSound()">♪</button>
+    </div>
   </header>
 
   <!-- Terminal Preview -->
@@ -1179,6 +1195,8 @@ const HTML = `<!DOCTYPE html>
   let histIndex = -1; // current position in history
   let overrides = { cursorColor: null, selectionBackground: null };
   let applyAll = false;
+  let progress = { discovered: [], achievements: [], xp: 0 };
+  let totalSchemes = 0;
 
   function hex6(v) { return /^#[0-9a-fA-F]{6}$/.test(v || "") ? v : null; }
 
@@ -1239,6 +1257,7 @@ const HTML = `<!DOCTYPE html>
     const res = await fetch("/api/state");
     const data = await res.json();
     installedSchemes = data.schemes;
+    totalSchemes = data.schemes.length;
     currentScheme = data.current;
     currentSize = data.font.size;
     favorites = data.favorites;
@@ -1261,6 +1280,8 @@ const HTML = `<!DOCTYPE html>
     history = [currentScheme];
     histIndex = 0;
     updateHistButtons();
+    applyProgress(data.progress);
+    discover(currentScheme);
     renderPreview();
     renderGrid();
   }
@@ -1403,6 +1424,7 @@ const HTML = `<!DOCTYPE html>
     const res = await fetch("/api/randomize", { method: "POST" });
     const data = await res.json();
     currentScheme = data.scheme;
+    discover(currentScheme);
     recordHistory(currentScheme);
     renderPreview();
     renderGrid();
@@ -1413,6 +1435,7 @@ const HTML = `<!DOCTYPE html>
     const data = await setSchemeServer(name);
     if (data.error) { showToast(data.error); return; }
     currentScheme = data.scheme;
+    discover(currentScheme);
     recordHistory(currentScheme);
     renderPreview();
     renderGrid();
@@ -1424,6 +1447,7 @@ const HTML = `<!DOCTYPE html>
     const name = history[--histIndex];
     await setSchemeServer(name);
     currentScheme = name;
+    discover(name);
     renderPreview();
     renderGrid();
     updateHistButtons();
@@ -1435,6 +1459,7 @@ const HTML = `<!DOCTYPE html>
     const name = history[++histIndex];
     await setSchemeServer(name);
     currentScheme = name;
+    discover(name);
     renderPreview();
     renderGrid();
     updateHistButtons();
@@ -1469,6 +1494,8 @@ const HTML = `<!DOCTYPE html>
     });
     const data = await res.json();
     favorites = data.favorites;
+    if (data.progress) applyProgress(data.progress);
+    achievementToast(data.newlyUnlocked);
     document.getElementById("favorites-count").textContent = favorites.length;
     renderGrid();
     showToast(favorites.includes(name) ? "★ Favorited " + name : "Unfavorited " + name);
@@ -1619,6 +1646,39 @@ const HTML = `<!DOCTYPE html>
     renderGrid();
   }
 
+  function levelFromXp(xp) { return Math.floor((xp || 0) / 100) + 1; }
+
+  function applyProgress(p) {
+    if (!p) return;
+    progress = p;
+    document.getElementById("hud-discovered").textContent = progress.discovered.length;
+    document.getElementById("hud-total").textContent = totalSchemes;
+    document.getElementById("hud-level").textContent = levelFromXp(progress.xp);
+    document.getElementById("hud-xp-val").textContent = progress.xp;
+  }
+
+  function achievementToast(list) {
+    if (!list || !list.length) return;
+    list.forEach((a, i) => setTimeout(() => {
+      showToast("🏆 " + a.label);
+      if (window.sfx) sfx.achievement();
+    }, i * 1200));
+  }
+
+  // Mark a theme discovered server-side; updates HUD + fires achievement toasts.
+  async function discover(name) {
+    try {
+      const res = await fetch("/api/progress/discover", {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ name })
+      });
+      const data = await res.json();
+      if (data.error) return;
+      applyProgress(data.progress);
+      achievementToast(data.newlyUnlocked);
+    } catch (e) {}
+  }
+
   function showToast(msg) {
     const t = document.getElementById("toast");
     t.textContent = msg;
@@ -1647,6 +1707,7 @@ const HTML = `<!DOCTYPE html>
     const data = await res.json();
     if (data.current !== currentScheme) {
       currentScheme = data.current;
+      discover(currentScheme);
       recordHistory(currentScheme);
       renderPreview();
       renderGrid();
