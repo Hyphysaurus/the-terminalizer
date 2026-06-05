@@ -1227,8 +1227,9 @@ const HTML = `<!DOCTYPE html>
     document.getElementById("tp-name").textContent = currentScheme;
     document.getElementById("tp-name").style.color = s.foreground;
     const rEl = document.getElementById("tp-rarity");
-    rEl.className = "rarity " + (s.rarity || "Common");
+    rEl.className = s.rarity ? "rarity " + s.rarity : "rarity";
     rEl.textContent = s.rarity || "";
+    rEl.style.display = s.rarity ? "" : "none";
 
     // Escape color values before concatenating into innerHTML (a malformed scheme color can't inject markup)
     const fg = esc(s.foreground), green = esc(s.green), blue = esc(s.blue),
