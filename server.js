@@ -1053,6 +1053,21 @@ const HTML = `<!DOCTYPE html>
     .hud-sound { cursor:pointer; border:1px solid var(--border); background:var(--surface-2);
       color:var(--accent); border-radius:6px; padding:3px 9px; font-size:0.8rem; line-height:1; }
     .hud-sound.muted { color:var(--text-ghost); }
+
+    .reactor-overlay { position:absolute; inset:0; pointer-events:none; overflow:hidden;
+      border-radius:inherit; opacity:0; transition:opacity 0.15s; z-index:5; }
+    .reactor-overlay.spinning { opacity:1; }
+    .reactor-reel { position:absolute; left:0; right:0; top:50%; transform:translateY(-50%);
+      text-align:center; font-family:'JetBrains Mono', monospace; font-weight:700;
+      font-size:1.1rem; color:var(--accent); text-shadow:0 0 12px var(--accent);
+      white-space:nowrap; filter:blur(0.4px); }
+    .reactor-flash { position:absolute; inset:0; background:radial-gradient(circle at 50% 50%, var(--accent-soft), transparent 60%);
+      opacity:0; }
+    @keyframes reactor-burst { 0%{opacity:0;transform:scale(0.6);} 30%{opacity:0.85;} 100%{opacity:0;transform:scale(1.5);} }
+    .reactor-flash.burst { animation:reactor-burst 0.5s ease-out; }
+    .reactor-overlay.lock .reactor-reel { animation:reactor-lock 0.32s cubic-bezier(.2,1.4,.3,1); }
+    @keyframes reactor-lock { 0%{transform:translateY(-50%) scale(1.25);} 100%{transform:translateY(-50%) scale(1);} }
+    @media (prefers-reduced-motion: reduce) { .reactor-overlay { display:none; } }
   </style>
 </head>
 <body>
@@ -1098,6 +1113,10 @@ const HTML = `<!DOCTYPE html>
     </div>
     <div class="terminal-body" id="tp-body"></div>
     <div class="palette-strip" id="tp-palette"></div>
+    <div class="reactor-overlay" id="reactor-overlay" aria-hidden="true">
+      <div class="reactor-reel" id="reactor-reel"></div>
+      <div class="reactor-flash" id="reactor-flash"></div>
+    </div>
   </div>
 
   <!-- Controls -->
@@ -1420,15 +1439,58 @@ const HTML = `<!DOCTYPE html>
     return res.json();
   }
 
+  let reactorBusy = false;
+  const prefersReducedMotion = () =>
+    window.matchMedia && window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+
+  // Animate a slot-reel that decelerates to finalName, then call onLock().
+  function runReactor(finalName, tier, onLock) {
+    const overlay = document.getElementById("reactor-overlay");
+    const reel = document.getElementById("reactor-reel");
+    const flash = document.getElementById("reactor-flash");
+    if (prefersReducedMotion()) { onLock(); return; }
+    reactorBusy = true;
+    overlay.classList.add("spinning");
+    overlay.classList.remove("lock");
+    const names = installedSchemes.map(s => s.name);
+    let t = 0;                 // 0..1 progress
+    let delay = 40;            // ms between ticks, grows as it decelerates
+    const pool = names.length ? names : [finalName];
+    function tick() {
+      if (t >= 1) { return lock(); }
+      reel.textContent = pool[Math.floor(Math.random() * pool.length)];
+      if (window.sfx) sfx.tick();
+      t += 0.05 + t * 0.04;    // accelerate progress => fewer, slower ticks near end
+      delay = 40 + t * 220;    // decelerate
+      setTimeout(tick, delay);
+    }
+    function lock() {
+      reel.textContent = finalName;
+      overlay.classList.add("lock");
+      flash.classList.remove("burst"); void flash.offsetWidth; flash.classList.add("burst");
+      if (window.sfx) sfx.lock(tier);
+      setTimeout(() => {
+        overlay.classList.remove("spinning");
+        reactorBusy = false;
+        onLock();
+      }, 260);
+    }
+    tick();
+  }
+
   async function randomize() {
+    if (reactorBusy) return;            // ignore re-entry; spin is short
     const res = await fetch("/api/randomize", { method: "POST" });
     const data = await res.json();
-    currentScheme = data.scheme;
-    discover(currentScheme);
-    recordHistory(currentScheme);
-    renderPreview();
-    renderGrid();
-    showToast("Switched to " + data.scheme);
+    const tier = (installedSchemes.find(s => s.name === data.scheme) || {}).rarity || "Common";
+    runReactor(data.scheme, tier, () => {
+      currentScheme = data.scheme;
+      recordHistory(currentScheme);
+      discover(currentScheme);
+      renderPreview();
+      renderGrid();
+      showToast("Switched to " + data.scheme);
+    });
   }
 
   async function pickScheme(name) {
