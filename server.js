@@ -1068,6 +1068,24 @@ const HTML = `<!DOCTYPE html>
     .reactor-overlay.lock .reactor-reel { animation:reactor-lock 0.32s cubic-bezier(.2,1.4,.3,1); }
     @keyframes reactor-lock { 0%{transform:translateY(-50%) scale(1.25);} 100%{transform:translateY(-50%) scale(1);} }
     @media (prefers-reduced-motion: reduce) { .reactor-overlay { display:none; } }
+    .app { position:relative; }
+    .corner { position:fixed; width:26px; height:26px; border:2px solid var(--border-strong);
+      pointer-events:none; opacity:0.55; z-index:3; }
+    .corner.tl { top:14px; left:14px; border-right:0; border-bottom:0; }
+    .corner.tr { top:14px; right:14px; border-left:0; border-bottom:0; }
+    .corner.bl { bottom:14px; left:14px; border-right:0; border-top:0; }
+    .corner.br { bottom:14px; right:14px; border-left:0; border-top:0; }
+    .boot { position:fixed; inset:0; z-index:50; background:var(--bg);
+      display:flex; align-items:center; justify-content:center; transition:opacity 0.4s; }
+    .boot.done { opacity:0; pointer-events:none; }
+    .boot-lines { font-family:'JetBrains Mono', monospace; font-size:0.85rem; color:var(--accent);
+      text-shadow:0 0 8px var(--accent); min-width:320px; }
+    .boot-lines .bl-line { opacity:0; white-space:pre; }
+    .boot-lines .bl-line.in { opacity:1; }
+    @keyframes glitch-in { 0%{opacity:0;transform:translateX(-2px);} 20%{opacity:1;transform:translateX(2px);}
+      40%{transform:translateX(-1px);} 100%{transform:translateX(0);} }
+    .glitch { animation:glitch-in 0.28s steps(2); }
+    @media (prefers-reduced-motion: reduce) { .boot { display:none; } .glitch { animation:none; } }
   </style>
 </head>
 <body>
@@ -1088,7 +1106,12 @@ const HTML = `<!DOCTYPE html>
   <span class="bubble" style="left:88%;width:4px;height:4px;animation-duration:18s;animation-delay:-6s"></span>
   <span class="bubble" style="left:95%;width:6px;height:6px;animation-duration:23s;animation-delay:-10s"></span>
 </div>
+<div class="boot" id="boot" aria-hidden="true">
+  <div class="boot-lines" id="boot-lines"></div>
+</div>
 <div class="app">
+  <span class="corner tl"></span><span class="corner tr"></span>
+  <span class="corner bl"></span><span class="corner br"></span>
   <header>
     <button class="ui-toggle" id="ui-toggle" onclick="toggleUiTheme()" title="Toggle Gold / Chrome helmet">&#9737;</button>
     <h1>The Terminalizer</h1>
@@ -1372,8 +1395,10 @@ const HTML = `<!DOCTYPE html>
     preview.style.background = s.background;
     titlebar.style.background = s.background;
     titlebar.style.borderBottom = "1px solid " + s.brightBlack;
-    document.getElementById("tp-name").textContent = currentScheme;
-    document.getElementById("tp-name").style.color = s.foreground;
+    const nameEl = document.getElementById("tp-name");
+    nameEl.textContent = currentScheme;
+    nameEl.style.color = s.foreground;
+    nameEl.classList.remove("glitch"); void nameEl.offsetWidth; nameEl.classList.add("glitch");
     const rEl = document.getElementById("tp-rarity");
     rEl.className = s.rarity ? "rarity " + s.rarity : "rarity";
     rEl.textContent = s.rarity || "";
@@ -1887,6 +1912,28 @@ const HTML = `<!DOCTYPE html>
   document.querySelectorAll(".btn, .tab, .filter-pill").forEach(function (el) {
     el.addEventListener("pointerenter", function () { if (window.sfx) sfx.hover(); });
   });
+
+  (function boot() {
+    const el = document.getElementById("boot");
+    if (!el) return;
+    const reduce = window.matchMedia && window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+    let done = false;
+    try { done = sessionStorage.getItem("terminalizer-booted") === "1"; } catch (e) {}
+    if (reduce || done) { el.classList.add("done"); return; }
+    const lines = ["> SYSTEM ONLINE", "> LOADING SCHEMES ...", "> PALETTE BANKS NOMINAL", "> REACTOR PRIMED"];
+    const box = document.getElementById("boot-lines");
+    box.innerHTML = lines.map(function (l) { return '<div class="bl-line">' + l + '</div>'; }).join("");
+    const nodes = box.querySelectorAll(".bl-line");
+    function finish() {
+      if (el.classList.contains("done")) return;
+      el.classList.add("done");
+      try { sessionStorage.setItem("terminalizer-booted", "1"); } catch (e) {}
+    }
+    nodes.forEach(function (n, i) { setTimeout(function () { n.classList.add("in"); if (window.sfx) sfx.tick(); }, 220 + i * 260); });
+    setTimeout(finish, 220 + nodes.length * 260 + 350);
+    el.addEventListener("click", finish);
+    window.addEventListener("keydown", finish, { once: true });
+  })();
 
   fetchState();
 </script>
