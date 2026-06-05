@@ -1449,7 +1449,6 @@ const HTML = `<!DOCTYPE html>
     const reel = document.getElementById("reactor-reel");
     const flash = document.getElementById("reactor-flash");
     if (prefersReducedMotion()) { onLock(); return; }
-    reactorBusy = true;
     overlay.classList.add("spinning");
     overlay.classList.remove("lock");
     const names = installedSchemes.map(s => s.name);
@@ -1471,7 +1470,6 @@ const HTML = `<!DOCTYPE html>
       if (window.sfx) sfx.lock(tier);
       setTimeout(() => {
         overlay.classList.remove("spinning");
-        reactorBusy = false;
         onLock();
       }, 260);
     }
@@ -1480,8 +1478,16 @@ const HTML = `<!DOCTYPE html>
 
   async function randomize() {
     if (reactorBusy) return;            // ignore re-entry; spin is short
-    const res = await fetch("/api/randomize", { method: "POST" });
-    const data = await res.json();
+    reactorBusy = true;                 // claim before the await so a rapid double-press can't slip through
+    let data;
+    try {
+      const res = await fetch("/api/randomize", { method: "POST" });
+      data = await res.json();
+    } catch (e) {
+      reactorBusy = false;
+      showToast("Couldn't randomize — try again");
+      return;
+    }
     const tier = (installedSchemes.find(s => s.name === data.scheme) || {}).rarity || "Common";
     runReactor(data.scheme, tier, () => {
       currentScheme = data.scheme;
@@ -1490,6 +1496,7 @@ const HTML = `<!DOCTYPE html>
       renderPreview();
       renderGrid();
       showToast("Switched to " + data.scheme);
+      reactorBusy = false;             // cleared on completion; both reduced-motion and reel paths reach here
     });
   }
 
