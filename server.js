@@ -36,6 +36,7 @@ if (!fs.existsSync(DATA_DIR)) fs.mkdirSync(DATA_DIR, { recursive: true });
 const FAVORITES_PATH = path.join(DATA_DIR, "favorites.json");
 const CACHE_PATH = path.join(DATA_DIR, "themes-cache.json");
 const BACKUP_PATH = path.join(DATA_DIR, "settings.backup.json");
+const PROGRESS_PATH = path.join(DATA_DIR, "progress.json");
 const PORT = process.env.PORT || 3456;
 // Bind to loopback only — this API mutates your Windows Terminal config with no auth,
 // so it must not be reachable from the local network. Override with HOST=0.0.0.0 at your own risk.
@@ -344,6 +345,55 @@ function rarityTier(scheme) {
   if (s >= 83) return "Rare";
   if (s >= 67) return "Uncommon";
   return "Common";
+}
+
+// --- Progress (collection meta) ---
+function defaultProgress() { return { discovered: [], achievements: [], xp: 0 }; }
+
+function loadProgress(p = PROGRESS_PATH) {
+  try {
+    const data = JSON.parse(fs.readFileSync(p, "utf-8"));
+    return {
+      discovered: Array.isArray(data.discovered) ? data.discovered : [],
+      achievements: Array.isArray(data.achievements) ? data.achievements : [],
+      xp: typeof data.xp === "number" ? data.xp : 0,
+    };
+  } catch { return defaultProgress(); }
+}
+
+// Atomic write (temp + rename) so a crash can't corrupt progress.json.
+function saveProgress(progress, p = PROGRESS_PATH) {
+  const tmp = p + ".tmp";
+  fs.writeFileSync(tmp, JSON.stringify(progress, null, 2), "utf-8");
+  fs.renameSync(tmp, p);
+}
+
+// --- XP / level ---
+function levelForXp(xp) { return Math.floor((xp || 0) / 100) + 1; }
+
+// --- Achievements (all evaluable from server state) ---
+const ACHIEVEMENTS = [
+  { id: "discover_10",     label: "Scout — 10 themes discovered",        test: (p) => p.discovered.length >= 10 },
+  { id: "discover_100",    label: "Archivist — 100 themes discovered",   test: (p) => p.discovered.length >= 100 },
+  { id: "discover_all",    label: "Completionist — every theme found",   test: (p, c) => c.totalSchemes > 0 && p.discovered.length >= c.totalSchemes },
+  { id: "fav_10",          label: "Curator — 10 favorites",              test: (p, c) => c.favoritesCount >= 10 },
+  { id: "apply_legendary", label: "Legendary — applied a Legendary palette", test: (p, c) => c.lastTier === "Legendary" },
+  { id: "apply_brutal",    label: "Into the Void — applied a near-black palette", test: (p, c) => typeof c.lastBrightness === "number" && c.lastBrightness < 12 },
+];
+
+// Mutates progress.achievements; returns the newly-unlocked {id,label} list.
+function evaluateAchievements(progress, ctx) {
+  const now = (ctx && ctx.now) || Date.now();
+  const have = new Set(progress.achievements.map((a) => a.id));
+  const newly = [];
+  for (const def of ACHIEVEMENTS) {
+    if (have.has(def.id)) continue;
+    if (def.test(progress, ctx || {})) {
+      progress.achievements.push({ id: def.id, unlockedAt: now });
+      newly.push({ id: def.id, label: def.label });
+    }
+  }
+  return newly;
 }
 
 // --- External themes ---
@@ -1668,6 +1718,7 @@ const server = http.createServer(async (req, res) => {
       opacity: defaults.opacity ?? 100,
       applyAll: applyAllProfiles,
       overrides: { cursorColor: defaults.cursorColor || null, selectionBackground: defaults.selectionBackground || null },
+      progress: loadProgress(),
     });
     return;
   }
@@ -1719,10 +1770,19 @@ const server = http.createServer(async (req, res) => {
     const { name } = await parseBody(req);
     const favs = loadFavorites();
     const idx = favs.indexOf(name);
+    const added = idx < 0;
     if (idx >= 0) favs.splice(idx, 1);
     else favs.push(name);
     saveFavorites(favs);
-    json({ favorites: favs });
+    const progress = loadProgress();
+    if (added) progress.xp += 5;
+    const newlyUnlocked = evaluateAchievements(progress, {
+      totalSchemes: (readSettings().schemes || []).length,
+      favoritesCount: favs.length,
+      lastTier: null, lastBrightness: null,
+    });
+    saveProgress(progress);
+    json({ favorites: favs, progress, newlyUnlocked });
     return;
   }
 
@@ -1806,6 +1866,33 @@ const server = http.createServer(async (req, res) => {
     return;
   }
 
+  if (route === "GET /api/progress") {
+    json({ progress: loadProgress() });
+    return;
+  }
+
+  if (route === "POST /api/progress/discover") {
+    const { name } = await parseBody(req);
+    const settings = readSettings();
+    const scheme = (settings.schemes || []).find((s) => s.name === name);
+    if (!scheme) { json({ error: "Unknown scheme" }, 400); return; }
+    const progress = loadProgress();
+    const isNew = !progress.discovered.includes(name);
+    if (isNew) { progress.discovered.push(name); progress.xp += 10; }
+    const tier = rarityTier(scheme);
+    const bg = hexToRgb(scheme.background);
+    const ctx = {
+      totalSchemes: (settings.schemes || []).length,
+      favoritesCount: loadFavorites().length,
+      lastTier: tier,
+      lastBrightness: bg ? rgbBrightness(bg) : null,
+    };
+    const newlyUnlocked = evaluateAchievements(progress, ctx);
+    saveProgress(progress);
+    json({ progress, newlyUnlocked, tier, isNew });
+    return;
+  }
+
   res.writeHead(404);
   res.end("Not found");
 
@@ -1837,6 +1924,12 @@ module.exports = {
   RARITY_TIERS,
   rarityScore,
   rarityTier,
+  defaultProgress,
+  loadProgress,
+  saveProgress,
+  levelForXp,
+  ACHIEVEMENTS,
+  evaluateAchievements,
 };
 
 if (require.main === module) {
