@@ -293,6 +293,59 @@ function slimScheme(s) {
   return o;
 }
 
+// --- Rarity (deterministic, derived from a scheme's palette) ---
+const RARITY_TIERS = ["Common", "Uncommon", "Rare", "Epic", "Legendary"];
+
+function hexToRgb(hex) {
+  const h = String(hex || "").replace("#", "");
+  if (h.length < 6) return null;
+  return {
+    r: parseInt(h.substr(0, 2), 16) || 0,
+    g: parseInt(h.substr(2, 2), 16) || 0,
+    b: parseInt(h.substr(4, 2), 16) || 0,
+  };
+}
+function rgbBrightness({ r, g, b }) { return (r * 299 + g * 587 + b * 114) / 1000; }
+function rgbHsl({ r, g, b }) {
+  r /= 255; g /= 255; b /= 255;
+  const mx = Math.max(r, g, b), mn = Math.min(r, g, b), d = mx - mn;
+  const l = (mx + mn) / 2;
+  if (d === 0) return { h: 0, s: 0, l };
+  const s = d / (1 - Math.abs(2 * l - 1));
+  let h;
+  if (mx === r) h = ((g - b) / d) % 6;
+  else if (mx === g) h = (b - r) / d + 2;
+  else h = (r - g) / d + 4;
+  h = (h * 60 + 360) % 360;
+  return { h, s, l };
+}
+
+// Score 0..100 from: average saturation of the 6 ANSI hues, hue diversity
+// (distinct 30-degree buckets), and fg/bg contrast.
+function rarityScore(scheme) {
+  const hueKeys = ["red", "green", "yellow", "blue", "purple", "cyan"];
+  const hsls = hueKeys.map((k) => hexToRgb(scheme[k])).filter(Boolean).map(rgbHsl);
+  if (hsls.length === 0) return 0;
+  const avgSat = hsls.reduce((a, x) => a + x.s, 0) / hsls.length; // 0..1
+  const buckets = new Set(hsls.map((x) => Math.round(x.h / 30)));
+  const hueDiversity = buckets.size / 6; // 0..1
+  const bg = hexToRgb(scheme.background), fg = hexToRgb(scheme.foreground);
+  const contrast = bg && fg
+    ? Math.min(1, Math.abs(rgbBrightness(fg) - rgbBrightness(bg)) / 255)
+    : 0.5;
+  const score = 100 * (0.5 * avgSat + 0.35 * hueDiversity + 0.15 * contrast);
+  return Math.max(0, Math.min(100, score));
+}
+
+function rarityTier(scheme) {
+  const s = rarityScore(scheme);
+  if (s >= 97) return "Legendary";
+  if (s >= 93) return "Epic";
+  if (s >= 83) return "Rare";
+  if (s >= 67) return "Uncommon";
+  return "Common";
+}
+
 // --- External themes ---
 function httpsGet(url) {
   return new Promise((resolve, reject) => {
@@ -1584,7 +1637,11 @@ const server = http.createServer(async (req, res) => {
     const settings = readSettings();
     const defaults = getDefaults(settings);
     json({
-      schemes: (settings.schemes || []).map(slimScheme),
+      schemes: (settings.schemes || []).map((s) => {
+        const slim = slimScheme(s);
+        slim.rarity = rarityTier(s);
+        return slim;
+      }),
       current: getCurrentScheme(settings),
       font: getFont(settings),
       favorites: loadFavorites(),
@@ -1758,7 +1815,9 @@ function openBrowser(url) {
 
 module.exports = {
   slimScheme,
-  // rarity / progress / achievements added in later tasks:
+  RARITY_TIERS,
+  rarityScore,
+  rarityTier,
 };
 
 if (require.main === module) {
