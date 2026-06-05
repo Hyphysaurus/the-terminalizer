@@ -980,6 +980,19 @@ const HTML = `<!DOCTYPE html>
       100% { clip-path: inset(0 0 0 0);   transform: translateX(-50%) translateY(0); }
     }
     @media (prefers-reduced-motion: reduce) { .toast.show { animation: none; } }
+
+    /* Rarity badges */
+    .rarity { display:inline-flex; align-items:center; gap:4px; font-size:0.62rem; font-weight:700;
+      letter-spacing:0.06em; text-transform:uppercase; padding:2px 6px; border-radius:5px;
+      border:1px solid currentColor; background:rgba(0,0,0,0.35); }
+    .rarity::before { content:""; width:6px; height:6px; border-radius:50%; background:currentColor;
+      box-shadow:0 0 6px 1px currentColor; }
+    .rarity.Common    { color:#9aa3ad; }
+    .rarity.Uncommon  { color:#4cd07d; }
+    .rarity.Rare      { color:#4aa3ff; }
+    .rarity.Epic      { color:#c06bff; }
+    .rarity.Legendary { color:#ffcf3f; }
+    .card-rarity { position:absolute; left:8px; top:8px; z-index:2; }
   </style>
 </head>
 <body>
@@ -1015,6 +1028,7 @@ const HTML = `<!DOCTYPE html>
       <div class="terminal-dot" style="background:#ffbd2e"></div>
       <div class="terminal-dot" style="background:#28c840"></div>
       <span id="tp-name">Loading...</span>
+      <span id="tp-rarity" class="rarity" style="margin-left:auto"></span>
     </div>
     <div class="terminal-body" id="tp-body"></div>
     <div class="palette-strip" id="tp-palette"></div>
@@ -1212,6 +1226,9 @@ const HTML = `<!DOCTYPE html>
     titlebar.style.borderBottom = "1px solid " + s.brightBlack;
     document.getElementById("tp-name").textContent = currentScheme;
     document.getElementById("tp-name").style.color = s.foreground;
+    const rEl = document.getElementById("tp-rarity");
+    rEl.className = "rarity " + (s.rarity || "Common");
+    rEl.textContent = s.rarity || "";
 
     // Escape color values before concatenating into innerHTML (a malformed scheme color can't inject markup)
     const fg = esc(s.foreground), green = esc(s.green), blue = esc(s.blue),
@@ -1287,6 +1304,7 @@ const HTML = `<!DOCTYPE html>
     const fg = s.foreground || "#ccc";
     return '<div class="scheme-card' + isActive + '" data-name="' + esc(s.name) + '" style="background:' + esc(bg) + ';">' +
       '<div class="active-badge">&#10003;</div>' +
+      (s.rarity ? '<span class="rarity ' + esc(s.rarity) + ' card-rarity" title="' + esc(s.rarity) + '"></span>' : '') +
       '<div class="scheme-colors">' + colors.map(c => '<div class="c" style="background:' + esc(c) + '"></div>').join("") + '</div>' +
       '<div class="scheme-name" style="color:' + esc(fg) + '">' + esc(s.name) + '</div>' +
       '<button class="fav-btn' + (isFav ? ' favorited' : '') + '" data-fav="' + esc(s.name) + '" title="Toggle favorite">' +
