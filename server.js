@@ -321,30 +321,67 @@ function rgbHsl({ r, g, b }) {
   return { h, s, l };
 }
 
-// Score 0..100 from: average saturation of the 6 ANSI hues, hue diversity
-// (distinct 30-degree buckets), and fg/bg contrast.
-function rarityScore(scheme) {
-  const hueKeys = ["red", "green", "yellow", "blue", "purple", "cyan"];
-  const hsls = hueKeys.map((k) => hexToRgb(scheme[k])).filter(Boolean).map(rgbHsl);
-  if (hsls.length === 0) return 0;
-  const avgSat = hsls.reduce((a, x) => a + x.s, 0) / hsls.length; // 0..1
-  const buckets = new Set(hsls.map((x) => Math.round(x.h / 30)));
-  const hueDiversity = buckets.size / 6; // 0..1
-  const bg = hexToRgb(scheme.background), fg = hexToRgb(scheme.foreground);
-  const contrast = bg && fg
-    ? Math.min(1, Math.abs(rgbBrightness(fg) - rgbBrightness(bg)) / 255)
-    : 0.5;
-  const score = 100 * (0.5 * avgSat + 0.35 * hueDiversity + 0.15 * contrast);
-  return Math.max(0, Math.min(100, score));
+// Rarity = how UNUSUAL a palette is relative to the whole collection (not availability).
+// Each theme gets a color "signature" from the HSL of its background, foreground and 6 ANSI
+// hues. A theme far from its nearest look-alikes is rare; one with many siblings is common.
+
+// 32-dim signature: per color, hue projected to a circle (weighted by saturation) + sat + lightness.
+const SIG_KEYS = ["background", "foreground", "red", "green", "yellow", "blue", "purple", "cyan"];
+function signature(scheme) {
+  const v = [];
+  for (const k of SIG_KEYS) {
+    const rgb = hexToRgb(scheme[k]);
+    if (!rgb) { v.push(0, 0, 0, 0); continue; }
+    const hsl = rgbHsl(rgb);
+    const hr = (hsl.h * Math.PI) / 180;
+    v.push(Math.cos(hr) * hsl.s, Math.sin(hr) * hsl.s, hsl.s, hsl.l);
+  }
+  return v;
+}
+function sigDist(a, b) {
+  let s = 0;
+  for (let i = 0; i < a.length; i++) { const d = a[i] - b[i]; s += d * d; }
+  return Math.sqrt(s);
+}
+function tierForPercentile(pct) {
+  if (pct >= 0.97) return "Legendary"; // top 3% most unusual
+  if (pct >= 0.90) return "Epic";      // next 7%
+  if (pct >= 0.70) return "Rare";      // next 20%
+  if (pct >= 0.35) return "Uncommon";  // next 35%
+  return "Common";                      // most-common 35%
 }
 
-function rarityTier(scheme) {
-  const s = rarityScore(scheme);
-  if (s >= 97) return "Legendary";
-  if (s >= 93) return "Epic";
-  if (s >= 83) return "Rare";
-  if (s >= 67) return "Uncommon";
-  return "Common";
+let _rarityCache = null, _rarityKey = "";
+// Map of scheme name -> tier. Score = avg distance to k nearest neighbors (higher = rarer);
+// tier from the score's percentile (ties share a tier). Memoized on the set of names.
+function computeRarities(schemes) {
+  const list = schemes || [];
+  const key = list.map((s) => s.name).join(" ");
+  if (key === _rarityKey && _rarityCache) return _rarityCache;
+  const sigs = list.map((s) => ({ name: s.name, v: signature(s) }));
+  const k = Math.min(5, Math.max(1, sigs.length - 1));
+  const scored = sigs.map((a, i) => {
+    const dists = [];
+    for (let j = 0; j < sigs.length; j++) if (j !== i) dists.push(sigDist(a.v, sigs[j].v));
+    dists.sort((x, y) => x - y);
+    let sum = 0; const n = Math.min(k, dists.length);
+    for (let t = 0; t < n; t++) sum += dists[t];
+    return { name: a.name, score: n ? sum / n : 0 };
+  });
+  const N = scored.length;
+  const scores = scored.map((x) => x.score);
+  const map = new Map();
+  for (const item of scored) {
+    let less = 0;
+    for (const sc of scores) if (sc < item.score) less++;
+    map.set(item.name, tierForPercentile(N > 1 ? less / (N - 1) : 0));
+  }
+  _rarityKey = key; _rarityCache = map;
+  return map;
+}
+// Convenience: tier of one scheme within a collection (falls back to the scheme alone).
+function rarityTier(scheme, schemes) {
+  return computeRarities(schemes && schemes.length ? schemes : [scheme]).get(scheme.name) || "Common";
 }
 
 // --- Progress (collection meta) ---
@@ -474,7 +511,8 @@ function startShuffle(ms, favsOnly = false, rareOnly = false) {
       pool = pool.filter((s) => favs.includes(s.name));
     }
     if (shuffleRareOnly) {
-      pool = pool.filter((s) => ["Rare", "Epic", "Legendary"].includes(rarityTier(s)));
+      const rar = computeRarities(settings.schemes || []);
+      pool = pool.filter((s) => ["Rare", "Epic", "Legendary"].includes(rar.get(s.name)));
     }
     const names = pool.map((s) => s.name).filter((n) => n !== current);
     if (names.length === 0) return;
@@ -1069,6 +1107,18 @@ const HTML = `<!DOCTYPE html>
     /* terminal decode-in glyphs */
     .term-scram { text-shadow: 0 0 6px currentColor; }
 
+    /* rarity explainer panel */
+    #rarity-info-btn { font-style: normal; }
+    .info-panel {
+      margin: 0 0 0.9rem; padding: 0.85rem 1rem; border-radius: 12px;
+      border: 1px solid var(--border); background: var(--surface-2);
+      font-size: 0.78rem; line-height: 1.55; color: var(--text-mid);
+    }
+    .info-panel strong { color: var(--text-strong); }
+    .info-panel em { color: var(--accent); font-style: normal; }
+    .rarity-legend { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 14px; margin-top: 0.7rem;
+      font-size: 0.72rem; color: var(--text-faint); }
+
     /* Rarity badges */
     .rarity { display:inline-flex; align-items:center; gap:4px; font-size:0.62rem; font-weight:700;
       letter-spacing:0.06em; text-transform:uppercase; padding:2px 6px; border-radius:5px;
@@ -1255,6 +1305,7 @@ const HTML = `<!DOCTYPE html>
       <option value="Epic">Epic</option>
       <option value="Legendary">Legendary</option>
     </select>
+    <button class="view-btn" id="rarity-info-btn" onclick="toggleRarityInfo()" title="How does rarity work?">&#9432;</button>
     <select class="shuffle-select" id="sort-select" onchange="setSort(this.value)" title="Sort themes">
       <option value="az">A&ndash;Z</option>
       <option value="brightness">Brightness</option>
@@ -1263,6 +1314,23 @@ const HTML = `<!DOCTYPE html>
     <div class="view-toggle">
       <button class="view-btn active" data-view="grid" onclick="setView('grid')" title="Grid view">&#9638;</button>
       <button class="view-btn" data-view="list" onclick="setView('list')" title="List view">&#9776;</button>
+    </div>
+  </div>
+
+  <div class="info-panel" id="rarity-info" hidden>
+    <strong>Rarity = uniqueness, not availability.</strong> Every theme installs the same way &mdash;
+    rarity measures how <em>unusual</em> a palette is among all <span id="rarity-info-total">531</span>
+    installed. Each theme gets a colour "signature" (the hue, saturation &amp; lightness of its background,
+    foreground and 6 core ANSI colours). Themes are ranked by how far their signature sits from its nearest
+    look-alikes: a palette with many siblings is <span class="rarity Common">Common</span>; a true outlier
+    nobody else resembles is <span class="rarity Legendary">Legendary</span>. Tiers are percentiles of that
+    uniqueness score:
+    <div class="rarity-legend">
+      <span class="rarity Legendary">Legendary</span> top 3%
+      <span class="rarity Epic">Epic</span> next 7%
+      <span class="rarity Rare">Rare</span> next 20%
+      <span class="rarity Uncommon">Uncommon</span> next 35%
+      <span class="rarity Common">Common</span> the rest
     </div>
   </div>
 
@@ -1391,6 +1459,13 @@ const HTML = `<!DOCTYPE html>
   }
 
   function setRarity(v) { activeRarity = v; renderGrid(); }
+
+  function toggleRarityInfo() {
+    const p = document.getElementById("rarity-info");
+    document.getElementById("rarity-info-total").textContent = totalSchemes || "all";
+    p.hidden = !p.hidden;
+    document.getElementById("rarity-info-btn").classList.toggle("active", !p.hidden);
+  }
 
   function brightness(s) {
     if (!s || !s.background) return 0;
@@ -2235,10 +2310,11 @@ const server = http.createServer(async (req, res) => {
     lastShuffleActivity = Date.now();
     const settings = readSettings();
     const defaults = getDefaults(settings);
+    const rar = computeRarities(settings.schemes || []);
     json({
       schemes: (settings.schemes || []).map((s) => {
         const slim = slimScheme(s);
-        slim.rarity = rarityTier(s);
+        slim.rarity = rar.get(s.name) || "Common";
         return slim;
       }),
       current: getCurrentScheme(settings),
@@ -2409,7 +2485,7 @@ const server = http.createServer(async (req, res) => {
     const progress = loadProgress();
     const isNew = !progress.discovered.includes(name);
     if (isNew) { progress.discovered.push(name); progress.xp += 10; }
-    const tier = rarityTier(scheme);
+    const tier = rarityTier(scheme, settings.schemes);
     const bg = hexToRgb(scheme.background);
     const ctx = {
       totalSchemes: (settings.schemes || []).length,
@@ -2452,7 +2528,8 @@ function openBrowser(url) {
 module.exports = {
   slimScheme,
   RARITY_TIERS,
-  rarityScore,
+  signature,
+  computeRarities,
   rarityTier,
   defaultProgress,
   loadProgress,

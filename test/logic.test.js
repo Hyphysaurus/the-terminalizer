@@ -19,19 +19,30 @@ const gray = {
   purple: "#585858", cyan: "#5c5c5c", white: "#cccccc", black: "#202020",
 };
 
-test("rarityScore is in 0..100 and deterministic", () => {
-  const a = m.rarityScore(vivid);
-  assert.ok(a >= 0 && a <= 100);
-  assert.strictEqual(a, m.rarityScore(vivid)); // deterministic
+test("signature returns a fixed-length finite numeric vector", () => {
+  const v = m.signature(vivid);
+  assert.ok(Array.isArray(v));
+  assert.strictEqual(v.length, 32); // 8 colors x 4 features
+  assert.ok(v.every((x) => typeof x === "number" && isFinite(x)));
 });
 
-test("vivid palette scores higher than grayscale", () => {
-  assert.ok(m.rarityScore(vivid) > m.rarityScore(gray));
+test("computeRarities assigns a known tier to every scheme (deterministic)", () => {
+  const set = [vivid, gray];
+  const a = m.computeRarities(set);
+  for (const s of set) assert.ok(m.RARITY_TIERS.includes(a.get(s.name)));
+  const b = m.computeRarities(set);
+  assert.strictEqual(a.get("Vivid"), b.get("Vivid")); // deterministic
 });
 
-test("rarityTier returns a known tier", () => {
-  assert.ok(m.RARITY_TIERS.includes(m.rarityTier(vivid)));
-  assert.ok(m.RARITY_TIERS.includes(m.rarityTier(gray)));
+test("an outlier palette ranks rarer than a cluster of look-alikes", () => {
+  // 12 identical grayscale themes (a dense cluster) + one wild outlier
+  const cluster = [];
+  for (let i = 0; i < 12; i++) cluster.push(Object.assign({}, gray, { name: "g" + i }));
+  const set = cluster.concat([Object.assign({}, vivid, { name: "Outlier" })]);
+  const map = m.computeRarities(set);
+  const rank = { Common: 0, Uncommon: 1, Rare: 2, Epic: 3, Legendary: 4 };
+  assert.ok(rank[map.get("Outlier")] > rank[map.get("g0")]);
+  assert.strictEqual(map.get("Outlier"), "Legendary"); // the lone outlier is the rarest
 });
 
 // --- Progress persistence (Task 4) ---
