@@ -20,6 +20,10 @@ Randomize, preview, and hot-swap your Windows Terminal themes from a sleek web U
 - **Export** — copy the current scheme's JSON to your clipboard
 - **Search, sort & filter** — filter by name, sort by A–Z / brightness / hue, filter dark vs light
 - **Themeable UI** — gold ⇄ chrome "helmet" toggle (remembered across sessions)
+- **Reactor randomize** — the shuffle is a slot-reel that decelerates and locks in with a glow burst
+- **Synthesized sound** — cyberpunk UI bleeps, ticks, and a reactor hum (Web Audio, zero files; toggle in the HUD)
+- **Collection meta** — discovered counter, rarity tiers (Common→Legendary), achievements, and XP/level, saved to `~/.terminalizer/progress.json`
+- **HUD + boot sequence** — a "SYSTEM ONLINE" boot, corner brackets, and glitch-in theme names
 
 ## Keyboard Shortcuts
 
@@ -74,7 +78,7 @@ TERMINALIZER_NO_OPEN=1 the-terminalizer
 
 ## How It Works
 
-The Terminalizer reads and writes your Windows Terminal `settings.json` to swap color schemes in real time. Your favorites and theme cache are stored in `~/.terminalizer/`. Before its first write, it saves a one-time backup of your original `settings.json` to `~/.terminalizer/settings.backup.json`, and all writes are atomic (temp file + rename) so a crash can't corrupt your config. Edits are surgical — your comments and formatting in `settings.json` are preserved (except when "apply to all profiles" is on, which rewrites the file).
+The Terminalizer reads and writes your Windows Terminal `settings.json` to swap color schemes in real time. Your favorites and theme cache are stored in `~/.terminalizer/`, as is `progress.json` (your discovered themes, achievements, and XP). Before its first write, it saves a one-time backup of your original `settings.json` to `~/.terminalizer/settings.backup.json`, and all writes are atomic (temp file + rename) so a crash can't corrupt your config. Edits are surgical — your comments and formatting in `settings.json` are preserved (except when "apply to all profiles" is on, which rewrites the file).
 
 Auto-detects stable, Preview, and unpackaged Windows Terminal installs.
 
