@@ -1685,7 +1685,7 @@ const HTML = `<!DOCTYPE html>
     const cmd = (raw || "").trim();
     if (!cmd) return;
     termCmd(cmd);                       // echo the typed line into the log
-    const parts = cmd.split(/\s+/);
+    const parts = cmd.split(" ").filter(function (x) { return x.length; });
     const v = parts.shift().toLowerCase();
     const arg = parts.join(" ");
     if (v === "random" || v === "rand" || v === "r") randomize();
@@ -2329,7 +2329,7 @@ const HTML = `<!DOCTYPE html>
         runCommand(val);
       } else if (e.key === "Tab") {
         e.preventDefault();
-        const mt = input.value.match(/^(apply|use|set)\s+(.*)$/i);
+        const mt = input.value.match(/^(apply|use|set) +(.*)$/i);
         if (mt && mt[2]) {
           const q = mt[2].toLowerCase();
           const hit = installedSchemes.find(s => s.name.toLowerCase().startsWith(q))
