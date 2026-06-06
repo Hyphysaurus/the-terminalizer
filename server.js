@@ -639,6 +639,31 @@ const HTML = `<!DOCTYPE html>
     /* casino-slot lock flash on the header */
     h1.slot-lock { filter: drop-shadow(0 0 14px var(--accent)) drop-shadow(0 1px 1px rgba(0,0,0,0.6)); transform: scale(1.04); }
     @media (prefers-reduced-motion: reduce) { h1.slot-lock { transform: none; } }
+    /* jackpot payoff (Epic / Legendary) */
+    h1.jackpot { animation: jackpot-title 1.2s ease-in-out; }
+    @keyframes jackpot-title {
+      0%,100% { filter: drop-shadow(0 1px 1px rgba(0,0,0,0.6)); transform: none; }
+      20% { transform: scale(1.13) rotate(-1.5deg); filter: drop-shadow(0 0 22px #ffcf3f); }
+      45% { transform: scale(1.07) rotate(1.5deg); filter: drop-shadow(0 0 22px #c06bff); }
+      70% { transform: scale(1.1) rotate(-1deg); filter: drop-shadow(0 0 22px #4aa3ff); }
+    }
+    #confetti { position: fixed; inset: 0; pointer-events: none; z-index: 40; overflow: hidden; }
+    #confetti .glyph {
+      position: absolute; top: 6%; font-family: 'JetBrains Mono', monospace; font-weight: 700;
+      font-size: 1.05rem; text-shadow: 0 0 8px currentColor; opacity: 0;
+      animation: jackpot-glyph 1.5s ease-out forwards;
+    }
+    @keyframes jackpot-glyph {
+      0% { opacity: 0; transform: translateY(0) scale(0.5); }
+      14% { opacity: 1; }
+      100% { opacity: 0; transform: translate(var(--dx,0), -130px) scale(1.25) rotate(45deg); }
+    }
+    .app.shake { animation: app-shake 0.42s ease-in-out; }
+    @keyframes app-shake {
+      0%,100% { transform: translateX(0); } 20% { transform: translateX(-5px); }
+      40% { transform: translateX(5px); } 60% { transform: translateX(-3px); } 80% { transform: translateX(3px); }
+    }
+    @media (prefers-reduced-motion: reduce) { h1.jackpot, #confetti .glyph, .app.shake { animation: none; } }
     .subtitle { font-size: 0.82rem; color: var(--text-dim); font-weight: 500; letter-spacing: 0.01em; }
 
     /* Daft Punk helmet red LED scanner (Cylon sweep) */
@@ -1117,6 +1142,7 @@ const HTML = `<!DOCTYPE html>
 <div class="boot" id="boot" aria-hidden="true">
   <div class="boot-lines" id="boot-lines"></div>
 </div>
+<div id="confetti" aria-hidden="true"></div>
 <div class="app">
   <span class="corner tl"></span><span class="corner tr"></span>
   <span class="corner bl"></span><span class="corner br"></span>
@@ -1299,9 +1325,12 @@ const HTML = `<!DOCTYPE html>
       hover: function () { blip(880, 0.04, "sine", 0.06); },
       tick: function () { blip(320 + Math.random() * 80, 0.03, "square", 0.12); },
       lock: function (tier) {
-        const big = tier === "Legendary" || tier === "Epic";
-        blip(140, 0.18, "sawtooth", 0.35);
-        if (big) setTimeout(function () { blip(660, 0.25, "triangle", 0.25); }, 60);
+        const lvl = { Common: 0, Uncommon: 1, Rare: 2, Epic: 3, Legendary: 4 }[tier] || 0;
+        blip(130 + lvl * 16, 0.18, "sawtooth", 0.34);                 // thunk, pitch rises with rarity
+        blip(330 + lvl * 95, 0.16, "triangle", 0.16 + lvl * 0.02);    // chime on top
+      },
+      coin: function () { // jackpot fanfare for Epic/Legendary
+        [784, 1175, 1568, 2093].forEach(function (f, i) { setTimeout(function () { blip(f, 0.13, "square", 0.2); }, i * 65); });
       },
       confirm: function () { blip(520, 0.1, "triangle", 0.22); setTimeout(function () { blip(780, 0.1, "triangle", 0.18); }, 70); },
       favorite: function () { blip(660, 0.08, "sine", 0.2); setTimeout(function () { blip(990, 0.12, "sine", 0.18); }, 60); },
@@ -1691,6 +1720,38 @@ const HTML = `<!DOCTYPE html>
     if (headerHold) clearTimeout(headerHold);
     headerHold = setTimeout(function () { scrambleText(H1_DEFAULT); }, 1900);
   }
+  // Quick header slot to a theme name on a direct pick (won't interrupt an active spin).
+  function headerFlash(text) {
+    if (headerTimer) return;
+    scrambleText(String(text));
+    revertHeaderSoon();
+  }
+  // Casino payoff for a high-tier result: title burst, glyph confetti, coin chord, gentle shake.
+  function jackpot(tier) {
+    if (window.sfx) sfx.coin();
+    if (prefersReducedMotion()) return;
+    const h = document.getElementById("app-title");
+    if (h) { h.classList.add("jackpot"); setTimeout(function () { h.classList.remove("jackpot"); }, 1300); }
+    const app = document.querySelector(".app");
+    if (app) { app.classList.remove("shake"); void app.offsetWidth; app.classList.add("shake");
+      setTimeout(function () { app.classList.remove("shake"); }, 450); }
+    const layer = document.getElementById("confetti");
+    if (layer) {
+      const col = tier === "Legendary" ? "#ffcf3f" : "#c06bff";
+      for (let i = 0; i < 20; i++) {
+        const g = document.createElement("span");
+        g.className = "glyph";
+        g.textContent = SCRAMBLE_GLYPHS.charAt(Math.floor(Math.random() * SCRAMBLE_GLYPHS.length));
+        g.style.left = (8 + Math.random() * 84) + "%";
+        g.style.color = col;
+        g.style.setProperty("--dx", (Math.random() * 140 - 70) + "px");
+        g.style.animationDelay = (Math.random() * 0.18).toFixed(2) + "s";
+        layer.appendChild(g);
+        setTimeout((function (el) { return function () { el.remove(); }; })(g), 1700);
+      }
+    }
+  }
+  function maybeJackpot(tier) { if (tier === "Epic" || tier === "Legendary") jackpot(tier); }
 
   // Casino slot: the header cycles random theme names, decelerates, locks on finalName, then onLock().
   function runReactor(finalName, tier, onLock) {
@@ -1713,6 +1774,7 @@ const HTML = `<!DOCTYPE html>
       h.classList.add("slot-lock");
       scrambleText(finalName, function () {
         if (window.sfx) sfx.lock(tier);
+        maybeJackpot(tier);
         setTimeout(function () { h.classList.remove("slot-lock"); }, 420);
         if (onLock) onLock();
         revertHeaderSoon();
@@ -1751,8 +1813,11 @@ const HTML = `<!DOCTYPE html>
     if (data.error) { showToast(data.error); return; }
     const prev = currentScheme;
     currentScheme = data.scheme;
+    const pickedTier = (installedSchemes.find(s => s.name === data.scheme) || {}).rarity;
     if (window.sfx) sfx.confirm();
-    termApply('apply "' + data.scheme + '"', data.scheme, (installedSchemes.find(s => s.name === data.scheme) || {}).rarity, prev);
+    headerFlash(data.scheme);
+    maybeJackpot(pickedTier);
+    termApply('apply "' + data.scheme + '"', data.scheme, pickedTier, prev);
     discover(currentScheme);
     recordHistory(currentScheme);
     renderPreview();
@@ -1765,6 +1830,7 @@ const HTML = `<!DOCTYPE html>
     const prev = currentScheme;
     await setSchemeServer(name);
     currentScheme = name;
+    headerFlash(name);
     termApply("undo", name, (installedSchemes.find(s => s.name === name) || {}).rarity, prev);
     discover(name);
     renderPreview();
@@ -1778,6 +1844,7 @@ const HTML = `<!DOCTYPE html>
     const prev = currentScheme;
     await setSchemeServer(name);
     currentScheme = name;
+    headerFlash(name);
     termApply("redo", name, (installedSchemes.find(s => s.name === name) || {}).rarity, prev);
     discover(name);
     renderPreview();
