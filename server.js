@@ -1031,30 +1031,8 @@ const HTML = `<!DOCTYPE html>
     @keyframes spin { to { transform: rotate(360deg); } }
 
     /* Toast */
-    .toast {
-      position: fixed; bottom: 2rem; left: 50%;
-      transform: translateX(-50%) translateY(100px);
-      background:
-        linear-gradient(to bottom, rgba(255,255,255,0.5), rgba(255,255,255,0) 50%),
-        linear-gradient(135deg, var(--accent), var(--accent-2));
-      color: #0c0c0e;
-      border: 1px solid rgba(255,255,255,0.5);
-      padding: 0.6rem 1.6rem; border-radius: 12px;
-      font-weight: 600; font-size: 0.78rem;
-      font-family: 'Inter', system-ui, sans-serif;
-      letter-spacing: 0.01em;
-      transition: transform 0.3s cubic-bezier(0.34, 1.56, 0.64, 1);
-      pointer-events: none; z-index: 100;
-      box-shadow: 0 8px 24px rgba(122,162,247,0.3);
-    }
-    .toast.show { transform: translateX(-50%) translateY(0); animation: toast-glitch 0.32s steps(3) 1; }
-    @keyframes toast-glitch {
-      0%   { clip-path: inset(0 0 62% 0); transform: translateX(-53%) translateY(0); }
-      30%  { clip-path: inset(45% 0 0 0); transform: translateX(-47%) translateY(0); }
-      60%  { clip-path: inset(0 0 22% 0); transform: translateX(-50%) translateY(0); }
-      100% { clip-path: inset(0 0 0 0);   transform: translateX(-50%) translateY(0); }
-    }
-    @media (prefers-reduced-motion: reduce) { .toast.show { animation: none; } }
+    /* terminal decode-in glyphs */
+    .term-scram { text-shadow: 0 0 6px currentColor; }
 
     /* Rarity badges */
     .rarity { display:inline-flex; align-items:center; gap:4px; font-size:0.62rem; font-weight:700;
@@ -1246,7 +1224,6 @@ const HTML = `<!DOCTYPE html>
   <div class="scheme-grid" id="scheme-grid"></div>
 </div>
 
-<div class="toast" id="toast"></div>
 
 <script>
   let installedSchemes = [];
@@ -1419,7 +1396,7 @@ const HTML = `<!DOCTYPE html>
     applyProgress(data.progress);
     // Seed the live terminal (no sfx — audio isn't armed yet)
     termLines = [
-      { tokens: [["maram@dev", "green"], [":", "fg"], ["~/themes", "blue"], ["$ ", "fg"], ["the-terminalizer", "fg"]] },
+      { tokens: [["terminalizer", "green"], [" ❯ ", "accent"], ["status", "fg"]] },
       { tokens: [["  ◈ ", "cyan"], ["online · ", "green"], [totalSchemes + " themes loaded", "fg"]] },
       { tokens: [["  ▸ ", "dim"], ["active: ", "fg"], [currentScheme, "accent"]] }
     ];
@@ -1442,36 +1419,83 @@ const HTML = `<!DOCTYPE html>
     if (window.sfx && audioArmed) sfx.tick();
   }
   function termCmd(text) {
-    termPush([["maram@dev", "green"], [":", "fg"], ["~/themes", "blue"], ["$ ", "fg"], [text, "fg"]]);
+    termPush([["terminalizer", "green"], [" ❯ ", "accent"], [text, "fg"]]);
   }
-  // Log an applied theme as a command + result pair. cmd is the full command text.
-  function termApply(cmd, name, tier) {
+  // Log an applied theme as command + the real settings.json change. prev = previous scheme name.
+  function termApply(cmd, name, tier, prev) {
     termCmd(cmd);
-    termPush([["  → ", "dim"], ["applied ", "fg"], [name, "accent"], ["  [" + (tier || "Common") + "]", "dim"]]);
+    if (prev && prev !== name) {
+      termPush([["  ~ ", "dim"], ["colorScheme ", "cyan"], ['"' + prev + '"', "red"],
+        [" → ", "dim"], ['"' + name + '"', "green"], ["  [" + (tier || "Common") + "]", "dim"]]);
+    } else {
+      termPush([["  → ", "dim"], ["colorScheme = ", "cyan"], ['"' + name + '"', "green"], ["  [" + (tier || "Common") + "]", "dim"]]);
+    }
+  }
+  // Decode-in effect: unsettled characters cascade through random glyphs (in the line's own
+  // themed color), then resolve to the real text.
+  const SCRAMBLE_GLYPHS = "ﾊﾐﾋｰｳｼﾅﾓﾆｻﾜﾂｵﾘｱﾎﾃﾏｹﾒｴｶｷﾑﾕﾗｾﾈｽﾀﾇﾌ0123456789:.=*+<>/\\|";
+  let scrambleTimer = null;
+
+  function lineCharsFor(tokens, s) {
+    const out = [];
+    for (const tk of tokens) {
+      const dim = tk[1] === "dim";
+      const col = dim ? s.foreground : termColor(s, tk[1]);
+      for (const ch of String(tk[0])) out.push({ ch: ch, col: col, dim: dim }); // iterate code points (emoji-safe)
+    }
+    return out;
+  }
+  // Render the first (revealed) chars as their real selves; the rest as random glyphs in the same color.
+  function charsToHtml(chars, revealed) {
+    let html = "";
+    for (let i = 0; i < chars.length; i++) {
+      const c = chars[i];
+      const dimCss = c.dim ? ";opacity:0.5" : "";
+      if (i < revealed || c.ch === " ") {
+        html += '<span style="color:' + esc(c.col) + dimCss + '">' + esc(c.ch) + '</span>';
+      } else {
+        const g = SCRAMBLE_GLYPHS.charAt(Math.floor(Math.random() * SCRAMBLE_GLYPHS.length));
+        html += '<span class="term-scram" style="color:' + esc(c.col) + dimCss + '">' + esc(g) + '</span>';
+      }
+    }
+    return html;
+  }
+  function promptHtml(s) {
+    return '<span style="color:' + esc(s.green) + '">terminalizer</span>' +
+      '<span style="color:' + esc(termColor(s, "accent")) + '"> &#10095; </span>' +
+      '<span class="term-cursor" style="color:' + esc(s.foreground) + '">_</span>';
+  }
+  function scrambleLine(el, chars) {
+    if (scrambleTimer) clearInterval(scrambleTimer);
+    let frame = 0;
+    const total = chars.length;
+    const steps = Math.max(7, Math.round(total * 0.6));
+    scrambleTimer = setInterval(function () {
+      frame++;
+      const revealed = Math.min(total, Math.round((frame / steps) * total));
+      el.innerHTML = charsToHtml(chars, revealed);
+      if (frame >= steps) { clearInterval(scrambleTimer); scrambleTimer = null; el.innerHTML = charsToHtml(chars, total); }
+    }, 26);
   }
   function renderTerminal() {
     const body = document.getElementById("tp-body");
     const s = installedSchemes.find(x => x.name === currentScheme);
     if (!body || !s) return;
+    const reduce = prefersReducedMotion();
+    let freshChars = null;
     let html = "";
     for (const line of termLines) {
-      html += '<div class="line' + (line.fresh ? " fresh" : "") + '">';
-      for (const tk of line.tokens) {
-        const dim = tk[1] === "dim";
-        const col = esc(dim ? s.foreground : termColor(s, tk[1]));
-        html += '<span style="color:' + col + (dim ? ";opacity:0.5" : "") + '">' + esc(tk[0]) + '</span>';
-      }
-      html += '</div>';
+      const chars = lineCharsFor(line.tokens, s);
+      const isFresh = line.fresh && !reduce;
+      html += '<div class="line"' + (isFresh ? ' data-fresh="1"' : '') + '>' +
+        charsToHtml(chars, isFresh ? 0 : chars.length) + '</div>';
+      if (isFresh) freshChars = chars;
       line.fresh = false;
     }
-    // trailing live prompt with a blinking cursor
-    html += '<div class="line">' +
-      '<span style="color:' + esc(s.green) + '">maram@dev</span>' +
-      '<span style="color:' + esc(s.foreground) + '">:</span>' +
-      '<span style="color:' + esc(s.blue) + '">~/themes</span>' +
-      '<span style="color:' + esc(s.foreground) + '">$ </span>' +
-      '<span class="term-cursor" style="color:' + esc(s.foreground) + '">_</span></div>';
+    html += '<div class="line">' + promptHtml(s) + '</div>';
     body.innerHTML = html;
+    const el = body.querySelector('[data-fresh]');
+    if (el && freshChars) scrambleLine(el, freshChars);
   }
 
   function renderPreview() {
@@ -1659,13 +1683,13 @@ const HTML = `<!DOCTYPE html>
     }
     const tier = (installedSchemes.find(s => s.name === data.scheme) || {}).rarity || "Common";
     runReactor(data.scheme, tier, () => {
+      const prev = currentScheme;
       currentScheme = data.scheme;
-      termApply("randomize", data.scheme, tier);
+      termApply("randomize", data.scheme, tier, prev);
       recordHistory(currentScheme);
       discover(currentScheme);
       renderPreview();
       renderGrid();
-      showToast("Switched to " + data.scheme);
       reactorBusy = false;             // cleared on completion; both reduced-motion and reel paths reach here
     });
   }
@@ -1673,40 +1697,40 @@ const HTML = `<!DOCTYPE html>
   async function pickScheme(name) {
     const data = await setSchemeServer(name);
     if (data.error) { showToast(data.error); return; }
+    const prev = currentScheme;
     currentScheme = data.scheme;
     if (window.sfx) sfx.confirm();
-    termApply('apply "' + data.scheme + '"', data.scheme, (installedSchemes.find(s => s.name === data.scheme) || {}).rarity);
+    termApply('apply "' + data.scheme + '"', data.scheme, (installedSchemes.find(s => s.name === data.scheme) || {}).rarity, prev);
     discover(currentScheme);
     recordHistory(currentScheme);
     renderPreview();
     renderGrid();
-    showToast(data.scheme);
   }
 
   async function undoTheme() {
     if (histIndex <= 0) return;
     const name = history[--histIndex];
+    const prev = currentScheme;
     await setSchemeServer(name);
     currentScheme = name;
-    termApply("undo", name, (installedSchemes.find(s => s.name === name) || {}).rarity);
+    termApply("undo", name, (installedSchemes.find(s => s.name === name) || {}).rarity, prev);
     discover(name);
     renderPreview();
     renderGrid();
     updateHistButtons();
-    showToast("Undo → " + name);
   }
 
   async function redoTheme() {
     if (histIndex >= history.length - 1) return;
     const name = history[++histIndex];
+    const prev = currentScheme;
     await setSchemeServer(name);
     currentScheme = name;
-    termApply("redo", name, (installedSchemes.find(s => s.name === name) || {}).rarity);
+    termApply("redo", name, (installedSchemes.find(s => s.name === name) || {}).rarity, prev);
     discover(name);
     renderPreview();
     renderGrid();
     updateHistButtons();
-    showToast("Redo → " + name);
   }
 
   async function randomFav() {
@@ -1745,7 +1769,6 @@ const HTML = `<!DOCTYPE html>
     achievementToast(data.newlyUnlocked);
     document.getElementById("favorites-count").textContent = favorites.length;
     renderGrid();
-    showToast(favorites.includes(name) ? "★ Favorited " + name : "Unfavorited " + name);
   }
 
   // Install a theme into settings.json; returns the slim scheme (or null) and updates local state.
@@ -1915,7 +1938,6 @@ const HTML = `<!DOCTYPE html>
   function achievementToast(list) {
     if (!list || !list.length) return;
     list.forEach((a, i) => setTimeout(() => {
-      showToast("🏆 " + a.label);
       termPush([["  🏆 ", "yellow"], ["unlocked: ", "fg"], [a.label, "accent"]]);
       if (window.sfx) sfx.achievement();
     }, i * 1200));
@@ -1939,25 +1961,9 @@ const HTML = `<!DOCTYPE html>
     } catch (e) {}
   }
 
-  // Toasts queue (bounded) so rapid feedback sequences cleanly instead of stomping
-  // each other or colliding with the reactor burst. The terminal carries the detail; this is the flourish.
-  let toastQueue = [];
-  let toastActive = false;
+  // All feedback now lives inside the terminal — print it as a system line that decodes in.
   function showToast(msg) {
-    toastQueue.push(msg);
-    if (toastQueue.length > 4) toastQueue.shift();
-    if (!toastActive) nextToast();
-  }
-  function nextToast() {
-    const t = document.getElementById("toast");
-    if (!toastQueue.length) { toastActive = false; return; }
-    toastActive = true;
-    t.textContent = toastQueue.shift();
-    t.classList.add("show");
-    setTimeout(() => {
-      t.classList.remove("show");
-      setTimeout(nextToast, 200);
-    }, 1500);
+    termPush([["  » ", "cyan"], [msg, "dim"]]);
   }
 
   // Delegated grid clicks (cards rendered as innerHTML carry data-* attributes, no inline JS)
