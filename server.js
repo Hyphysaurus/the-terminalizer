@@ -2619,6 +2619,44 @@ function openBrowser(url) {
   exec(cmd, () => {}); // ignore errors; the URL is printed regardless
 }
 
+// true if version string a (x.y.z) is higher than b
+function isNewerVersion(a, b) {
+  const pa = String(a).split("."), pb = String(b).split(".");
+  for (let i = 0; i < 3; i++) {
+    const d = (parseInt(pa[i], 10) || 0) - (parseInt(pb[i], 10) || 0);
+    if (d !== 0) return d > 0;
+  }
+  return false;
+}
+
+// Best-effort "update available" notice. Non-blocking and fails silent — no network, no noise.
+// Set TERMINALIZER_NO_UPDATE_CHECK to disable.
+function checkForUpdate() {
+  if (process.env.TERMINALIZER_NO_UPDATE_CHECK) return;
+  let current;
+  try { current = require("./package.json").version; } catch { return; }
+  const req = https.get(
+    "https://registry.npmjs.org/the-terminalizer/latest",
+    { timeout: 2500, headers: { accept: "application/vnd.npm.install-v1+json" } },
+    (res) => {
+      if (res.statusCode !== 200) { res.resume(); return; }
+      let body = "";
+      res.on("data", (c) => (body += c));
+      res.on("end", () => {
+        try {
+          const latest = JSON.parse(body).version;
+          if (latest && isNewerVersion(latest, current)) {
+            console.log(`\n  ✨ Update available: ${current} → ${latest}`);
+            console.log(`     Run:  npm i -g the-terminalizer\n`);
+          }
+        } catch {}
+      });
+    }
+  );
+  req.on("error", () => {});
+  req.on("timeout", () => req.destroy());
+}
+
 module.exports = {
   slimScheme,
   RARITY_TIERS,
@@ -2648,5 +2686,6 @@ if (require.main === module) {
   server.listen(PORT, HOST, () => {
     console.log(`The Terminalizer running at ${URL_STR}`);
     openBrowser(URL_STR);
+    checkForUpdate();
   });
 }
