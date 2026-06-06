@@ -633,7 +633,12 @@ const HTML = `<!DOCTYPE html>
       -webkit-background-clip: text; background-clip: text;
       -webkit-text-fill-color: transparent; color: transparent;
       filter: drop-shadow(0 1px 1px rgba(0,0,0,0.6));
+      white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+      transition: filter 0.18s ease, transform 0.18s ease;
     }
+    /* casino-slot lock flash on the header */
+    h1.slot-lock { filter: drop-shadow(0 0 14px var(--accent)) drop-shadow(0 1px 1px rgba(0,0,0,0.6)); transform: scale(1.04); }
+    @media (prefers-reduced-motion: reduce) { h1.slot-lock { transform: none; } }
     .subtitle { font-size: 0.82rem; color: var(--text-dim); font-weight: 500; letter-spacing: 0.01em; }
 
     /* Daft Punk helmet red LED scanner (Cylon sweep) */
@@ -1117,7 +1122,7 @@ const HTML = `<!DOCTYPE html>
   <span class="corner bl"></span><span class="corner br"></span>
   <header>
     <button class="ui-toggle" id="ui-toggle" onclick="toggleUiTheme()" title="Toggle Gold / Chrome helmet">&#9737;</button>
-    <h1>The Terminalizer</h1>
+    <h1 id="app-title">The Terminalizer</h1>
     <p class="subtitle">Randomize, preview, and hot-swap your Windows Terminal themes</p>
     <div class="red-scanner" aria-hidden="true"><span class="led"></span></div>
     <div class="hud-strip" id="hud-strip" aria-live="polite">
@@ -1652,35 +1657,66 @@ const HTML = `<!DOCTYPE html>
   const prefersReducedMotion = () =>
     window.matchMedia && window.matchMedia("(prefers-reduced-motion: reduce)").matches;
 
-  // Animate a slot-reel that decelerates to finalName, then call onLock().
+  // --- The header "THE TERMINALIZER" doubles as a casino slot machine / message display ---
+  const H1_DEFAULT = "The Terminalizer";
+  let headerTimer = null;   // reel (setTimeout) or scramble (setInterval) handle
+  let headerHold = null;    // pending revert-to-title timeout
+
+  function clearHeaderTimer() {
+    if (headerTimer) { clearTimeout(headerTimer); clearInterval(headerTimer); headerTimer = null; }
+  }
+  // Scramble the header toward the target text, then call onDone.
+  function scrambleText(target, onDone) {
+    const h = document.getElementById("app-title");
+    if (!h) { if (onDone) onDone(); return; }
+    if (prefersReducedMotion()) { h.textContent = target; if (onDone) onDone(); return; }
+    clearHeaderTimer();
+    const chars = Array.from(target);
+    const total = chars.length;
+    let frame = 0;
+    const steps = Math.max(8, total);
+    headerTimer = setInterval(function () {
+      frame++;
+      const revealed = Math.floor((frame / steps) * total);
+      let out = "";
+      for (let i = 0; i < total; i++) {
+        out += (i < revealed || chars[i] === " ") ? chars[i]
+          : SCRAMBLE_GLYPHS.charAt(Math.floor(Math.random() * SCRAMBLE_GLYPHS.length));
+      }
+      h.textContent = out;
+      if (frame >= steps) { clearInterval(headerTimer); headerTimer = null; h.textContent = target; if (onDone) onDone(); }
+    }, 30);
+  }
+  function revertHeaderSoon() {
+    if (headerHold) clearTimeout(headerHold);
+    headerHold = setTimeout(function () { scrambleText(H1_DEFAULT); }, 1900);
+  }
+
+  // Casino slot: the header cycles random theme names, decelerates, locks on finalName, then onLock().
   function runReactor(finalName, tier, onLock) {
-    const overlay = document.getElementById("reactor-overlay");
-    const reel = document.getElementById("reactor-reel");
-    const flash = document.getElementById("reactor-flash");
-    if (prefersReducedMotion()) { onLock(); return; }
-    overlay.classList.add("spinning");
-    overlay.classList.remove("lock");
-    const names = installedSchemes.map(s => s.name);
-    let t = 0;                 // 0..1 progress
-    let delay = 40;            // ms between ticks, grows as it decelerates
-    const pool = names.length ? names : [finalName];
+    const h = document.getElementById("app-title");
+    if (!h || prefersReducedMotion()) { if (onLock) onLock(); revertHeaderSoon(); return; }
+    clearHeaderTimer();
+    if (headerHold) { clearTimeout(headerHold); headerHold = null; }
+    const pool = installedSchemes.map(s => s.name);
+    const names = pool.length ? pool : [finalName];
+    let t = 0;
     function tick() {
-      if (t >= 1) { return lock(); }
-      reel.textContent = pool[Math.floor(Math.random() * pool.length)];
+      if (t >= 1) return lock();
+      h.textContent = names[Math.floor(Math.random() * names.length)];
       if (window.sfx) sfx.tick();
-      t += 0.05 + t * 0.04;    // accelerate progress => fewer, slower ticks near end
-      delay = 40 + t * 220;    // decelerate
-      setTimeout(tick, delay);
+      t += 0.05 + t * 0.04;
+      headerTimer = setTimeout(tick, 40 + t * 240);
     }
     function lock() {
-      reel.textContent = finalName;
-      overlay.classList.add("lock");
-      flash.classList.remove("burst"); void flash.offsetWidth; flash.classList.add("burst");
-      if (window.sfx) sfx.lock(tier);
-      setTimeout(() => {
-        overlay.classList.remove("spinning");
-        onLock();
-      }, 260);
+      headerTimer = null;
+      h.classList.add("slot-lock");
+      scrambleText(finalName, function () {
+        if (window.sfx) sfx.lock(tier);
+        setTimeout(function () { h.classList.remove("slot-lock"); }, 420);
+        if (onLock) onLock();
+        revertHeaderSoon();
+      });
     }
     tick();
   }
@@ -1977,9 +2013,12 @@ const HTML = `<!DOCTYPE html>
     } catch (e) {}
   }
 
-  // All feedback now lives inside the terminal — print it as a system line that decodes in.
+  // Transient messages slot into the header (the "hidden toast"), then it reverts to the title.
+  // Skipped while the slot machine is mid-spin so a randomize result isn't interrupted.
   function showToast(msg) {
-    termPush([["  » ", "cyan"], [msg, "dim"]]);
+    if (headerTimer) return;
+    scrambleText(String(msg));
+    revertHeaderSoon();
   }
 
   // Delegated grid clicks (cards rendered as innerHTML carry data-* attributes, no inline JS)
