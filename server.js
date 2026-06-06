@@ -356,7 +356,7 @@ let _rarityCache = null, _rarityKey = "";
 // tier from the score's percentile (ties share a tier). Memoized on the set of names.
 function computeRarities(schemes) {
   const list = schemes || [];
-  const key = list.map((s) => s.name).join(" ");
+  const key = list.map((s) => s.name).join("\n");
   if (key === _rarityKey && _rarityCache) return _rarityCache;
   const sigs = list.map((s) => ({ name: s.name, v: signature(s) }));
   const k = Math.min(5, Math.max(1, sigs.length - 1));
@@ -792,6 +792,16 @@ const HTML = `<!DOCTYPE html>
     .terminal-body .line { white-space: pre; line-height: 1.5; }
     .terminal-body .line.fresh { animation: term-line-in 0.26s ease-out; }
     @keyframes term-line-in { from { opacity: 0; transform: translateX(-4px); } to { opacity: 1; transform: none; } }
+    .terminal-input-line {
+      display: flex; align-items: center; padding: 0 1.3rem 0.9rem;
+      font-family: inherit; font-size: inherit; line-height: 1.6; white-space: pre;
+    }
+    .term-input {
+      flex: 1; min-width: 0; background: transparent; border: none; outline: none;
+      font-family: inherit; font-size: inherit; line-height: inherit; padding: 0; margin: 0;
+      color: inherit; caret-color: currentColor;
+    }
+    .term-input::placeholder { color: currentColor; opacity: 0.32; }
     .term-cursor { animation: term-blink 1.1s steps(2) infinite; }
     @keyframes term-blink { 0%, 50% { opacity: 1; } 50.01%, 100% { opacity: 0; } }
     @media (prefers-reduced-motion: reduce) { .terminal-body .line.fresh { animation: none; } .term-cursor { animation: none; } }
@@ -1224,6 +1234,11 @@ const HTML = `<!DOCTYPE html>
       <span id="tp-rarity" class="rarity" style="margin-left:auto"></span>
     </div>
     <div class="terminal-body" id="tp-body"></div>
+    <div class="terminal-input-line" id="tp-inputline">
+      <span id="tp-prompt"></span><input id="term-input" class="term-input" type="text" autocomplete="off"
+        autocapitalize="off" spellcheck="false" aria-label="Terminal command input"
+        placeholder="type a command — try: help">
+    </div>
     <div class="palette-strip" id="tp-palette"></div>
     <div class="reactor-overlay" id="reactor-overlay" aria-hidden="true">
       <div class="reactor-reel" id="reactor-reel"></div>
@@ -1603,8 +1618,14 @@ const HTML = `<!DOCTYPE html>
   }
   function promptHtml(s) {
     return '<span style="color:' + esc(s.green) + '">terminalizer</span>' +
-      '<span style="color:' + esc(termColor(s, "accent")) + '"> &#10095; </span>' +
-      '<span class="term-cursor" style="color:' + esc(s.foreground) + '">_</span>';
+      '<span style="color:' + esc(termColor(s, "accent")) + '"> &#10095; </span>';
+  }
+  // The input-line prompt + caret recolor with the theme (it lives outside the pumped log area).
+  function setPrompt(s) {
+    const p = document.getElementById("tp-prompt");
+    const inp = document.getElementById("term-input");
+    if (p) p.innerHTML = promptHtml(s);
+    if (inp) { inp.style.color = s.foreground; inp.style.caretColor = s.foreground; }
   }
   function scrambleLine(el, chars, onDone) {
     if (scrambleTimer) clearInterval(scrambleTimer);
@@ -1638,11 +1659,49 @@ const HTML = `<!DOCTYPE html>
       if (isFresh) freshChars = chars;
       line.fresh = false;
     }
-    html += '<div class="line">' + promptHtml(s) + '</div>';
     body.innerHTML = html;
+    setPrompt(s);
     const el = body.querySelector('[data-fresh]');
     if (el && freshChars) scrambleLine(el, freshChars, onDone);
     else if (onDone) onDone();
+  }
+
+  // A single indented result line in the terminal.
+  function termResult(text, key) { termPush([["  ", "fg"], [String(text), key || "dim"]]); }
+  function termHelp() {
+    termResult("commands: random · apply <name> · fav · surprise · undo · redo · dark · light · sound · rarity · clear · help", "fg");
+  }
+  function applyByQuery(q) {
+    if (!q) { termResult("usage: apply <theme name>", "yellow"); return; }
+    const ql = q.toLowerCase();
+    const m = installedSchemes.find(s => s.name.toLowerCase() === ql)
+      || installedSchemes.find(s => s.name.toLowerCase().startsWith(ql))
+      || installedSchemes.find(s => s.name.toLowerCase().includes(ql));
+    if (m) pickScheme(m.name);
+    else termResult('no theme matching "' + q + '"', "red");
+  }
+  // Parse and run a typed terminal command.
+  function runCommand(raw) {
+    const cmd = (raw || "").trim();
+    if (!cmd) return;
+    termCmd(cmd);                       // echo the typed line into the log
+    const parts = cmd.split(/\s+/);
+    const v = parts.shift().toLowerCase();
+    const arg = parts.join(" ");
+    if (v === "random" || v === "rand" || v === "r") randomize();
+    else if (v === "apply" || v === "use" || v === "set") applyByQuery(arg);
+    else if (v === "fav" || v === "star" || v === "favorite") { if (currentScheme) toggleFav(currentScheme); }
+    else if (v === "surprise") surprise();
+    else if (v === "undo") undoTheme();
+    else if (v === "redo") redoTheme();
+    else if (v === "dark") setFilter("dark");
+    else if (v === "light") setFilter("light");
+    else if (v === "sound" || v === "mute") toggleSound();
+    else if (v === "rarity" || v === "info") toggleRarityInfo();
+    else if (v === "find" || v === "search") { document.getElementById("search").value = arg; renderGrid(); termResult('searching "' + arg + '"', "cyan"); }
+    else if (v === "clear" || v === "cls") { termQueue = []; termPumping = false; termLines = []; renderTerminal(); }
+    else if (v === "help" || v === "?" || v === "commands") termHelp();
+    else termResult('unknown command "' + v + '" — try: help', "red");
   }
 
   function renderPreview() {
@@ -1662,8 +1721,9 @@ const HTML = `<!DOCTYPE html>
     rEl.textContent = s.rarity || "";
     rEl.style.display = s.rarity ? "" : "none";
 
-    // (The live terminal repaints itself via the line pump, not here, so an in-progress
+    // (The live terminal log repaints via the line pump, not here, so an in-progress
     //  decode animation is never clobbered by a theme repaint.)
+    setPrompt(s);   // the input-line prompt + caret do recolor here
 
     // 16-color ANSI palette strip (normal row + bright row)
     const normal = ["black", "red", "green", "yellow", "blue", "purple", "cyan", "white"];
@@ -2254,6 +2314,40 @@ const HTML = `<!DOCTYPE html>
   document.querySelectorAll(".btn, .tab, .filter-pill").forEach(function (el) {
     el.addEventListener("pointerenter", function () { if (window.sfx) sfx.hover(); });
   });
+
+  // Typeable terminal: Enter runs a command, Tab completes theme names, Up/Down recall history.
+  (function () {
+    const input = document.getElementById("term-input");
+    if (!input) return;
+    const cmdHistory = [];
+    let histPos = 0;
+    input.addEventListener("keydown", function (e) {
+      if (e.key === "Enter") {
+        const val = input.value;
+        if (val.trim()) { cmdHistory.push(val); histPos = cmdHistory.length; }
+        input.value = "";
+        runCommand(val);
+      } else if (e.key === "Tab") {
+        e.preventDefault();
+        const mt = input.value.match(/^(apply|use|set)\s+(.*)$/i);
+        if (mt && mt[2]) {
+          const q = mt[2].toLowerCase();
+          const hit = installedSchemes.find(s => s.name.toLowerCase().startsWith(q))
+            || installedSchemes.find(s => s.name.toLowerCase().includes(q));
+          if (hit) input.value = mt[1].toLowerCase() + " " + hit.name;
+        }
+      } else if (e.key === "ArrowUp" && cmdHistory.length) {
+        e.preventDefault(); histPos = Math.max(0, histPos - 1); input.value = cmdHistory[histPos] || "";
+      } else if (e.key === "ArrowDown" && cmdHistory.length) {
+        e.preventDefault(); histPos = Math.min(cmdHistory.length, histPos + 1); input.value = cmdHistory[histPos] || "";
+      }
+    });
+    // Clicking anywhere in the terminal focuses the command line.
+    const preview = document.getElementById("terminal-preview");
+    if (preview) preview.addEventListener("click", function (e) {
+      if (e.target.tagName !== "INPUT") input.focus();
+    });
+  })();
 
   (function boot() {
     const el = document.getElementById("boot");
