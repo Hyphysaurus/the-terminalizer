@@ -1401,8 +1401,9 @@ const HTML = `<!DOCTYPE html>
       { tokens: [["  ▸ ", "dim"], ["active: ", "fg"], [currentScheme, "accent"]] }
     ];
     document.querySelectorAll(".view-btn").forEach(b => b.classList.toggle("active", b.dataset.view === gridView));
-    discover(currentScheme);
     renderPreview();
+    renderTerminal();   // paint the seeded session once (settled, no animation)
+    discover(currentScheme);
     renderGrid();
   }
 
@@ -1412,11 +1413,20 @@ const HTML = `<!DOCTYPE html>
       yellow: s.yellow, purple: s.purple, red: s.red, accent: s.cyan || s.blue || s.foreground };
     return map[key] || s.foreground;
   }
+  // Queue lines so each one visibly decodes in before the next starts (sequential, not stomped).
+  let termQueue = [];
+  let termPumping = false;
   function termPush(tokens) {
-    termLines.push({ tokens: tokens, fresh: true });
+    termQueue.push(tokens);
+    if (!termPumping) pumpTerm();
+  }
+  function pumpTerm() {
+    if (!termQueue.length) { termPumping = false; return; }
+    termPumping = true;
+    termLines.push({ tokens: termQueue.shift(), fresh: true });
     if (termLines.length > 6) termLines.shift();
-    renderTerminal();
     if (window.sfx && audioArmed) sfx.tick();
+    renderTerminal(function () { setTimeout(pumpTerm, 80); });
   }
   function termCmd(text) {
     termPush([["terminalizer", "green"], [" ❯ ", "accent"], [text, "fg"]]);
@@ -1465,22 +1475,27 @@ const HTML = `<!DOCTYPE html>
       '<span style="color:' + esc(termColor(s, "accent")) + '"> &#10095; </span>' +
       '<span class="term-cursor" style="color:' + esc(s.foreground) + '">_</span>';
   }
-  function scrambleLine(el, chars) {
+  function scrambleLine(el, chars, onDone) {
     if (scrambleTimer) clearInterval(scrambleTimer);
     let frame = 0;
     const total = chars.length;
-    const steps = Math.max(7, Math.round(total * 0.6));
+    const steps = Math.max(6, Math.round(total * 0.5));
     scrambleTimer = setInterval(function () {
       frame++;
       const revealed = Math.min(total, Math.round((frame / steps) * total));
       el.innerHTML = charsToHtml(chars, revealed);
-      if (frame >= steps) { clearInterval(scrambleTimer); scrambleTimer = null; el.innerHTML = charsToHtml(chars, total); }
-    }, 26);
+      if (frame >= steps) {
+        clearInterval(scrambleTimer); scrambleTimer = null;
+        el.innerHTML = charsToHtml(chars, total);
+        if (onDone) onDone();
+      }
+    }, 24);
   }
-  function renderTerminal() {
+  // onDone (optional) fires once the freshly-added line finishes decoding (drives the pump).
+  function renderTerminal(onDone) {
     const body = document.getElementById("tp-body");
     const s = installedSchemes.find(x => x.name === currentScheme);
-    if (!body || !s) return;
+    if (!body || !s) { if (onDone) onDone(); return; }
     const reduce = prefersReducedMotion();
     let freshChars = null;
     let html = "";
@@ -1495,7 +1510,8 @@ const HTML = `<!DOCTYPE html>
     html += '<div class="line">' + promptHtml(s) + '</div>';
     body.innerHTML = html;
     const el = body.querySelector('[data-fresh]');
-    if (el && freshChars) scrambleLine(el, freshChars);
+    if (el && freshChars) scrambleLine(el, freshChars, onDone);
+    else if (onDone) onDone();
   }
 
   function renderPreview() {
@@ -1515,8 +1531,8 @@ const HTML = `<!DOCTYPE html>
     rEl.textContent = s.rarity || "";
     rEl.style.display = s.rarity ? "" : "none";
 
-    // Live terminal session — repaint with the new scheme's colors
-    renderTerminal();
+    // (The live terminal repaints itself via the line pump, not here, so an in-progress
+    //  decode animation is never clobbered by a theme repaint.)
 
     // 16-color ANSI palette strip (normal row + bright row)
     const normal = ["black", "red", "green", "yellow", "blue", "purple", "cyan", "white"];
@@ -2082,7 +2098,8 @@ const server = http.createServer(async (req, res) => {
   }
 
   if (route === "GET /") {
-    res.writeHead(200, { "Content-Type": "text/html" });
+    // no-store so a refresh always gets the current build (the UI ships inside this file)
+    res.writeHead(200, { "Content-Type": "text/html", "Cache-Control": "no-store, must-revalidate" });
     res.end(HTML);
     return;
   }
