@@ -715,8 +715,13 @@ const HTML = `<!DOCTYPE html>
       margin-left: auto; font-size: 0.68rem; opacity: 0.4;
       font-family: 'Inter', system-ui, sans-serif; font-weight: 500;
     }
-    .terminal-body { padding: 1rem 1.3rem; }
-    .terminal-body .line { white-space: pre; }
+    .terminal-body { padding: 1rem 1.3rem; min-height: 8.4rem; display: flex; flex-direction: column; justify-content: flex-end; overflow: hidden; }
+    .terminal-body .line { white-space: pre; line-height: 1.5; }
+    .terminal-body .line.fresh { animation: term-line-in 0.26s ease-out; }
+    @keyframes term-line-in { from { opacity: 0; transform: translateX(-4px); } to { opacity: 1; transform: none; } }
+    .term-cursor { animation: term-blink 1.1s steps(2) infinite; }
+    @keyframes term-blink { 0%, 50% { opacity: 1; } 50.01%, 100% { opacity: 0; } }
+    @media (prefers-reduced-motion: reduce) { .terminal-body .line.fresh { animation: none; } .term-cursor { animation: none; } }
 
     /* 16-color ANSI palette strip */
     .palette-strip { display: flex; flex-direction: column; gap: 3px; padding: 0 1.3rem 1rem; }
@@ -906,27 +911,38 @@ const HTML = `<!DOCTYPE html>
     /* Scheme grid */
     .scheme-grid {
       display: grid;
-      grid-template-columns: repeat(auto-fill, minmax(250px, 1fr));
-      gap: 8px;
-      max-height: 55vh;
+      grid-template-columns: repeat(auto-fill, minmax(196px, 1fr));
+      gap: 6px;
+      max-height: 58vh;
       overflow-y: auto;
       padding-right: 4px;
+      scroll-behavior: auto;
     }
+    .scheme-grid.list { grid-template-columns: 1fr; gap: 3px; }
     .scheme-grid::-webkit-scrollbar { width: 5px; }
     .scheme-grid::-webkit-scrollbar-track { background: transparent; }
     .scheme-grid::-webkit-scrollbar-thumb { background: var(--border); border-radius: 4px; }
+    /* grid ⇄ list view toggle */
+    .view-toggle { display: flex; gap: 3px; flex-shrink: 0; }
+    .view-btn {
+      background: var(--surface-2); border: 1px solid var(--border); color: var(--text-faint);
+      border-radius: 7px; padding: 5px 9px; cursor: pointer; font-size: 0.8rem; line-height: 1;
+      transition: all 0.18s ease;
+    }
+    .view-btn:hover { color: var(--text-mid); border-color: var(--border-strong); }
+    .view-btn.active { color: var(--accent); border-color: var(--border-strong); background: var(--accent-bg); }
 
     .scheme-card {
       border: 1px solid var(--card-border);
-      border-radius: 12px;
-      padding: 0.6rem 0.85rem;
+      border-radius: 9px;
+      padding: 0.42rem 0.65rem;
       cursor: pointer;
-      transition: all 0.2s ease;
+      transition: transform 0.16s ease, box-shadow 0.16s ease, border-color 0.16s ease;
       display: flex;
       align-items: center;
-      gap: 10px;
+      gap: 9px;
       position: relative;
-      box-shadow: 0 3px 10px var(--shadow), inset 0 1px 0 rgba(255,255,255,0.25);
+      box-shadow: 0 2px 7px var(--shadow), inset 0 1px 0 rgba(255,255,255,0.22);
     }
     /* glossy top sheen on each card */
     .scheme-card::before {
@@ -960,16 +976,25 @@ const HTML = `<!DOCTYPE html>
       box-shadow: 0 2px 8px rgba(122,162,247,0.4);
     }
     .scheme-card.active .active-badge { display: block; }
+    /* compact one-line list view */
+    .scheme-grid.list .scheme-card { padding: 0.3rem 0.6rem; border-radius: 6px; gap: 9px;
+      box-shadow: 0 1px 5px var(--shadow); }
+    .scheme-grid.list .scheme-card::before { display: none; }
+    .scheme-grid.list .scheme-card:hover { transform: none; }
+    .scheme-grid.list .scheme-colors { grid-template-columns: repeat(6, 1fr); gap: 2px; }
+    .scheme-grid.list .scheme-colors .c { width: 8px; height: 8px; border-radius: 2px; }
+    .scheme-grid.list .card-rarity { position: static; margin-right: 2px; }
+    .scheme-grid.list .scheme-name { font-size: 0.74rem; }
 
     .scheme-colors {
       display: grid; grid-template-columns: repeat(3, 1fr); gap: 3px; flex-shrink: 0;
     }
     .scheme-colors .c {
-      width: 11px; height: 11px; border-radius: 3px;
+      width: 10px; height: 10px; border-radius: 3px;
       box-shadow: inset 0 0 0 1px rgba(0,0,0,0.15);
     }
     .scheme-name {
-      font-size: 0.76rem; flex: 1; font-weight: 500;
+      font-size: 0.75rem; flex: 1; font-weight: 500;
       overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
       letter-spacing: 0.01em;
     }
@@ -1212,6 +1237,10 @@ const HTML = `<!DOCTYPE html>
       <option value="brightness">Brightness</option>
       <option value="hue">Hue</option>
     </select>
+    <div class="view-toggle">
+      <button class="view-btn active" data-view="grid" onclick="setView('grid')" title="Grid view">&#9638;</button>
+      <button class="view-btn" data-view="list" onclick="setView('list')" title="List view">&#9776;</button>
+    </div>
   </div>
 
   <div class="scheme-grid" id="scheme-grid"></div>
@@ -1239,6 +1268,13 @@ const HTML = `<!DOCTYPE html>
   let applyAll = false;
   let progress = { discovered: [], achievements: [], xp: 0 };
   let totalSchemes = 0;
+  let termLines = [];   // live terminal session: each entry is an array of [text, colorKey] tokens
+  let gridView = "grid";
+  try { gridView = localStorage.getItem("terminalizer-view") === "list" ? "list" : "grid"; } catch (e) {}
+  let gridItems = [];   // full list of card HTML strings for the current view
+  let gridRendered = 0; // how many have been appended (windowed rendering)
+  const GRID_BATCH = 60;
+  let audioArmed = false; // true after the first user gesture (Web Audio autoplay gate)
 
   // --- Synthesized SFX (Web Audio, zero files) ---
   const sfx = (function () {
@@ -1381,9 +1417,61 @@ const HTML = `<!DOCTYPE html>
     histIndex = 0;
     updateHistButtons();
     applyProgress(data.progress);
+    // Seed the live terminal (no sfx — audio isn't armed yet)
+    termLines = [
+      { tokens: [["maram@dev", "green"], [":", "fg"], ["~/themes", "blue"], ["$ ", "fg"], ["the-terminalizer", "fg"]] },
+      { tokens: [["  ◈ ", "cyan"], ["online · ", "green"], [totalSchemes + " themes loaded", "fg"]] },
+      { tokens: [["  ▸ ", "dim"], ["active: ", "fg"], [currentScheme, "accent"]] }
+    ];
+    document.querySelectorAll(".view-btn").forEach(b => b.classList.toggle("active", b.dataset.view === gridView));
     discover(currentScheme);
     renderPreview();
     renderGrid();
+  }
+
+  // --- Live terminal session: real actions print as themed lines inside the preview ---
+  function termColor(s, key) {
+    const map = { fg: s.foreground, green: s.green, blue: s.blue, cyan: s.cyan,
+      yellow: s.yellow, purple: s.purple, red: s.red, accent: s.cyan || s.blue || s.foreground };
+    return map[key] || s.foreground;
+  }
+  function termPush(tokens) {
+    termLines.push({ tokens: tokens, fresh: true });
+    if (termLines.length > 6) termLines.shift();
+    renderTerminal();
+    if (window.sfx && audioArmed) sfx.tick();
+  }
+  function termCmd(text) {
+    termPush([["maram@dev", "green"], [":", "fg"], ["~/themes", "blue"], ["$ ", "fg"], [text, "fg"]]);
+  }
+  // Log an applied theme as a command + result pair. cmd is the full command text.
+  function termApply(cmd, name, tier) {
+    termCmd(cmd);
+    termPush([["  → ", "dim"], ["applied ", "fg"], [name, "accent"], ["  [" + (tier || "Common") + "]", "dim"]]);
+  }
+  function renderTerminal() {
+    const body = document.getElementById("tp-body");
+    const s = installedSchemes.find(x => x.name === currentScheme);
+    if (!body || !s) return;
+    let html = "";
+    for (const line of termLines) {
+      html += '<div class="line' + (line.fresh ? " fresh" : "") + '">';
+      for (const tk of line.tokens) {
+        const dim = tk[1] === "dim";
+        const col = esc(dim ? s.foreground : termColor(s, tk[1]));
+        html += '<span style="color:' + col + (dim ? ";opacity:0.5" : "") + '">' + esc(tk[0]) + '</span>';
+      }
+      html += '</div>';
+      line.fresh = false;
+    }
+    // trailing live prompt with a blinking cursor
+    html += '<div class="line">' +
+      '<span style="color:' + esc(s.green) + '">maram@dev</span>' +
+      '<span style="color:' + esc(s.foreground) + '">:</span>' +
+      '<span style="color:' + esc(s.blue) + '">~/themes</span>' +
+      '<span style="color:' + esc(s.foreground) + '">$ </span>' +
+      '<span class="term-cursor" style="color:' + esc(s.foreground) + '">_</span></div>';
+    body.innerHTML = html;
   }
 
   function renderPreview() {
@@ -1391,7 +1479,6 @@ const HTML = `<!DOCTYPE html>
     if (!s) return;
     const preview = document.getElementById("terminal-preview");
     const titlebar = document.getElementById("tp-titlebar");
-    const body = document.getElementById("tp-body");
     preview.style.background = s.background;
     titlebar.style.background = s.background;
     titlebar.style.borderBottom = "1px solid " + s.brightBlack;
@@ -1404,29 +1491,8 @@ const HTML = `<!DOCTYPE html>
     rEl.textContent = s.rarity || "";
     rEl.style.display = s.rarity ? "" : "none";
 
-    // Escape color values before concatenating into innerHTML (a malformed scheme color can't inject markup)
-    const fg = esc(s.foreground), green = esc(s.green), blue = esc(s.blue),
-      cyan = esc(s.cyan), yellow = esc(s.yellow), purple = esc(s.purple), red = esc(s.red);
-    body.innerHTML =
-      '<div class="line"><span style="color:' + green + '">maram@dev</span>' +
-      '<span style="color:' + fg + '">:</span>' +
-      '<span style="color:' + blue + '">~/projects</span>' +
-      '<span style="color:' + fg + '">$ </span>' +
-      '<span style="color:' + fg + '">node server.js</span></div>' +
-      '<div class="line"><span style="color:' + cyan + '">INFO</span>' +
-      '<span style="color:' + fg + '">  Server running on port </span>' +
-      '<span style="color:' + yellow + '">3456</span></div>' +
-      '<div class="line"><span style="color:' + green + '">OK</span>' +
-      '<span style="color:' + fg + '">    Loaded </span>' +
-      '<span style="color:' + purple + '">12 routes</span></div>' +
-      '<div class="line"><span style="color:' + red + '">WARN</span>' +
-      '<span style="color:' + fg + '">  No .env file found, using defaults</span></div>' +
-      '<div class="line"><span style="color:' + green + '">maram@dev</span>' +
-      '<span style="color:' + fg + '">:</span>' +
-      '<span style="color:' + blue + '">~/projects</span>' +
-      '<span style="color:' + yellow + '"> (main) </span>' +
-      '<span style="color:' + fg + '">$ </span>' +
-      '<span style="color:' + fg + '; opacity: 0.4">_</span></div>';
+    // Live terminal session — repaint with the new scheme's colors
+    renderTerminal();
 
     // 16-color ANSI palette strip (normal row + bright row)
     const normal = ["black", "red", "green", "yellow", "blue", "purple", "cyan", "white"];
@@ -1467,7 +1533,27 @@ const HTML = `<!DOCTYPE html>
         .map(t => externalCard(t));
     }
 
-    grid.innerHTML = items.join("");
+    grid.className = "scheme-grid" + (gridView === "list" ? " list" : "");
+    gridItems = items;
+    gridRendered = 0;
+    grid.innerHTML = "";
+    grid.scrollTop = 0;
+    appendGridBatch();
+  }
+
+  // Windowed rendering: append cards in batches so 500+ themes stay light and smooth.
+  function appendGridBatch() {
+    if (gridRendered >= gridItems.length) return;
+    const grid = document.getElementById("scheme-grid");
+    grid.insertAdjacentHTML("beforeend", gridItems.slice(gridRendered, gridRendered + GRID_BATCH).join(""));
+    gridRendered += GRID_BATCH;
+  }
+
+  function setView(v) {
+    gridView = v === "list" ? "list" : "grid";
+    try { localStorage.setItem("terminalizer-view", gridView); } catch (e) {}
+    document.querySelectorAll(".view-btn").forEach(b => b.classList.toggle("active", b.dataset.view === gridView));
+    renderGrid();
   }
 
   function schemeCard(s) {
@@ -1574,6 +1660,7 @@ const HTML = `<!DOCTYPE html>
     const tier = (installedSchemes.find(s => s.name === data.scheme) || {}).rarity || "Common";
     runReactor(data.scheme, tier, () => {
       currentScheme = data.scheme;
+      termApply("randomize", data.scheme, tier);
       recordHistory(currentScheme);
       discover(currentScheme);
       renderPreview();
@@ -1588,6 +1675,7 @@ const HTML = `<!DOCTYPE html>
     if (data.error) { showToast(data.error); return; }
     currentScheme = data.scheme;
     if (window.sfx) sfx.confirm();
+    termApply('apply "' + data.scheme + '"', data.scheme, (installedSchemes.find(s => s.name === data.scheme) || {}).rarity);
     discover(currentScheme);
     recordHistory(currentScheme);
     renderPreview();
@@ -1600,6 +1688,7 @@ const HTML = `<!DOCTYPE html>
     const name = history[--histIndex];
     await setSchemeServer(name);
     currentScheme = name;
+    termApply("undo", name, (installedSchemes.find(s => s.name === name) || {}).rarity);
     discover(name);
     renderPreview();
     renderGrid();
@@ -1612,6 +1701,7 @@ const HTML = `<!DOCTYPE html>
     const name = history[++histIndex];
     await setSchemeServer(name);
     currentScheme = name;
+    termApply("redo", name, (installedSchemes.find(s => s.name === name) || {}).rarity);
     discover(name);
     renderPreview();
     renderGrid();
@@ -1647,7 +1737,10 @@ const HTML = `<!DOCTYPE html>
     });
     const data = await res.json();
     favorites = data.favorites;
-    if (window.sfx && favorites.includes(name)) sfx.favorite();
+    const faved = favorites.includes(name);
+    if (window.sfx && faved) sfx.favorite();
+    if (faved) termPush([["  ★ ", "yellow"], ["favorited ", "fg"], [name, "accent"]]);
+    else termPush([["  ☆ ", "dim"], ["unfavorited ", "dim"], [name, "dim"]]);
     if (data.progress) applyProgress(data.progress);
     achievementToast(data.newlyUnlocked);
     document.getElementById("favorites-count").textContent = favorites.length;
@@ -1823,6 +1916,7 @@ const HTML = `<!DOCTYPE html>
     if (!list || !list.length) return;
     list.forEach((a, i) => setTimeout(() => {
       showToast("🏆 " + a.label);
+      termPush([["  🏆 ", "yellow"], ["unlocked: ", "fg"], [a.label, "accent"]]);
       if (window.sfx) sfx.achievement();
     }, i * 1200));
   }
@@ -1837,15 +1931,33 @@ const HTML = `<!DOCTYPE html>
       const data = await res.json();
       if (data.error) return;
       applyProgress(data.progress);
+      if (data.isNew) {
+        termPush([["  ◈ ", "cyan"], ["discovered ", "fg"], [data.progress.discovered.length + "/" + totalSchemes, "green"],
+          ["   +10 XP", "yellow"], ["  (LVL " + levelFromXp(data.progress.xp) + ")", "dim"]]);
+      }
       achievementToast(data.newlyUnlocked);
     } catch (e) {}
   }
 
+  // Toasts queue (bounded) so rapid feedback sequences cleanly instead of stomping
+  // each other or colliding with the reactor burst. The terminal carries the detail; this is the flourish.
+  let toastQueue = [];
+  let toastActive = false;
   function showToast(msg) {
+    toastQueue.push(msg);
+    if (toastQueue.length > 4) toastQueue.shift();
+    if (!toastActive) nextToast();
+  }
+  function nextToast() {
     const t = document.getElementById("toast");
-    t.textContent = msg;
+    if (!toastQueue.length) { toastActive = false; return; }
+    toastActive = true;
+    t.textContent = toastQueue.shift();
     t.classList.add("show");
-    setTimeout(() => t.classList.remove("show"), 1800);
+    setTimeout(() => {
+      t.classList.remove("show");
+      setTimeout(nextToast, 200);
+    }, 1500);
   }
 
   // Delegated grid clicks (cards rendered as innerHTML carry data-* attributes, no inline JS)
@@ -1860,6 +1972,11 @@ const HTML = `<!DOCTYPE html>
     }
     const card = e.target.closest(".scheme-card[data-name]");
     if (card) pickScheme(card.dataset.name);
+  });
+
+  // Windowed rendering: append the next batch as the user nears the bottom of the grid.
+  document.getElementById("scheme-grid").addEventListener("scroll", function () {
+    if (this.scrollTop + this.clientHeight >= this.scrollHeight - 240) appendGridBatch();
   });
 
   // Poll for shuffle changes (so undo works after an auto-shuffle pick too)
@@ -1898,6 +2015,7 @@ const HTML = `<!DOCTYPE html>
 
   // Browser autoplay policy: audio can only start after a user gesture.
   function armAudioOnce() {
+    audioArmed = true;
     sfx.arm();
     window.removeEventListener("pointerdown", armAudioOnce);
     window.removeEventListener("keydown", armAudioOnce);
