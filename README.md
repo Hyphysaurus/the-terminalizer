@@ -20,6 +20,15 @@ Randomize, preview, and hot-swap your Windows Terminal themes from a sleek web U
 - **Export** — copy the current scheme's JSON to your clipboard
 - **Search, sort & filter** — filter by name, sort by A–Z / brightness / hue, filter dark vs light
 - **Themeable UI** — gold ⇄ chrome "helmet" toggle (remembered across sessions)
+- **Live action terminal** — the preview is a real, typeable command line. Type `random`, `apply <name>` (Tab-completes), `fav`, `surprise`, `undo`/`redo`, `dark`/`light`, `sound`, `rarity`, `find <q>`, `clear`, `help`; every action decodes in as themed log lines that show the actual `colorScheme` change written to your config
+- **Casino slot header** — Randomize spins the "TERMINALIZER" title like a slot machine, decelerating and locking on the result; transient messages slot into it too
+- **Jackpot** — landing an Epic or Legendary theme triggers a payoff: title burst, glyph confetti, coin chord, and a shake
+- **True rarity** — tiers reflect how *unusual* a palette is versus the whole collection (not availability): each theme gets an HSL color signature and is ranked by distance to its nearest look-alikes. Legendary = top 3% most unusual. An in-app **ⓘ** explains exactly how it's computed
+- **Rarity filter & Rare+ shuffle** — filter the list by tier, and restrict auto-shuffle to Rare/Epic/Legendary
+- **Synthesized sound** — cyberpunk UI bleeps, ticks, a reactor hum, and a rarity-pitched lock chord (Web Audio, zero files; toggle in the HUD)
+- **Collection meta** — discovered counter, achievements, and XP/level, saved to `~/.terminalizer/progress.json`
+- **HUD + boot sequence** — a "SYSTEM ONLINE" boot, corner brackets, a live status strip, and glitch-in theme names
+- **Grid ⇄ list views** — denser cards with windowed rendering for 500+ themes, plus a compact list view
 
 ## Keyboard Shortcuts
 
@@ -74,7 +83,7 @@ TERMINALIZER_NO_OPEN=1 the-terminalizer
 
 ## How It Works
 
-The Terminalizer reads and writes your Windows Terminal `settings.json` to swap color schemes in real time. Your favorites and theme cache are stored in `~/.terminalizer/`. Before its first write, it saves a one-time backup of your original `settings.json` to `~/.terminalizer/settings.backup.json`, and all writes are atomic (temp file + rename) so a crash can't corrupt your config. Edits are surgical — your comments and formatting in `settings.json` are preserved (except when "apply to all profiles" is on, which rewrites the file).
+The Terminalizer reads and writes your Windows Terminal `settings.json` to swap color schemes in real time. Your favorites and theme cache are stored in `~/.terminalizer/`, as is `progress.json` (your discovered themes, achievements, and XP). Before its first write, it saves a one-time backup of your original `settings.json` to `~/.terminalizer/settings.backup.json`, and all writes are atomic (temp file + rename) so a crash can't corrupt your config. Edits are surgical — your comments and formatting in `settings.json` are preserved (except when "apply to all profiles" is on, which rewrites the file).
 
 Auto-detects stable, Preview, and unpackaged Windows Terminal installs.
 

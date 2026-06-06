@@ -36,6 +36,7 @@ if (!fs.existsSync(DATA_DIR)) fs.mkdirSync(DATA_DIR, { recursive: true });
 const FAVORITES_PATH = path.join(DATA_DIR, "favorites.json");
 const CACHE_PATH = path.join(DATA_DIR, "themes-cache.json");
 const BACKUP_PATH = path.join(DATA_DIR, "settings.backup.json");
+const PROGRESS_PATH = path.join(DATA_DIR, "progress.json");
 const PORT = process.env.PORT || 3456;
 // Bind to loopback only — this API mutates your Windows Terminal config with no auth,
 // so it must not be reachable from the local network. Override with HOST=0.0.0.0 at your own risk.
@@ -293,6 +294,145 @@ function slimScheme(s) {
   return o;
 }
 
+// --- Rarity (deterministic, derived from a scheme's palette) ---
+const RARITY_TIERS = ["Common", "Uncommon", "Rare", "Epic", "Legendary"];
+
+function hexToRgb(hex) {
+  const h = String(hex || "").replace("#", "");
+  if (h.length < 6) return null;
+  return {
+    r: parseInt(h.substr(0, 2), 16) || 0,
+    g: parseInt(h.substr(2, 2), 16) || 0,
+    b: parseInt(h.substr(4, 2), 16) || 0,
+  };
+}
+function rgbBrightness({ r, g, b }) { return (r * 299 + g * 587 + b * 114) / 1000; }
+function rgbHsl({ r, g, b }) {
+  r /= 255; g /= 255; b /= 255;
+  const mx = Math.max(r, g, b), mn = Math.min(r, g, b), d = mx - mn;
+  const l = (mx + mn) / 2;
+  if (d === 0) return { h: 0, s: 0, l };
+  const s = d / (1 - Math.abs(2 * l - 1));
+  let h;
+  if (mx === r) h = ((g - b) / d) % 6;
+  else if (mx === g) h = (b - r) / d + 2;
+  else h = (r - g) / d + 4;
+  h = (h * 60 + 360) % 360;
+  return { h, s, l };
+}
+
+// Rarity = how UNUSUAL a palette is relative to the whole collection (not availability).
+// Each theme gets a color "signature" from the HSL of its background, foreground and 6 ANSI
+// hues. A theme far from its nearest look-alikes is rare; one with many siblings is common.
+
+// 32-dim signature: per color, hue projected to a circle (weighted by saturation) + sat + lightness.
+const SIG_KEYS = ["background", "foreground", "red", "green", "yellow", "blue", "purple", "cyan"];
+function signature(scheme) {
+  const v = [];
+  for (const k of SIG_KEYS) {
+    const rgb = hexToRgb(scheme[k]);
+    if (!rgb) { v.push(0, 0, 0, 0); continue; }
+    const hsl = rgbHsl(rgb);
+    const hr = (hsl.h * Math.PI) / 180;
+    v.push(Math.cos(hr) * hsl.s, Math.sin(hr) * hsl.s, hsl.s, hsl.l);
+  }
+  return v;
+}
+function sigDist(a, b) {
+  let s = 0;
+  for (let i = 0; i < a.length; i++) { const d = a[i] - b[i]; s += d * d; }
+  return Math.sqrt(s);
+}
+function tierForPercentile(pct) {
+  if (pct >= 0.97) return "Legendary"; // top 3% most unusual
+  if (pct >= 0.90) return "Epic";      // next 7%
+  if (pct >= 0.70) return "Rare";      // next 20%
+  if (pct >= 0.35) return "Uncommon";  // next 35%
+  return "Common";                      // most-common 35%
+}
+
+let _rarityCache = null, _rarityKey = "";
+// Map of scheme name -> tier. Score = avg distance to k nearest neighbors (higher = rarer);
+// tier from the score's percentile (ties share a tier). Memoized on the set of names.
+function computeRarities(schemes) {
+  const list = schemes || [];
+  const key = list.map((s) => s.name).join("\n");
+  if (key === _rarityKey && _rarityCache) return _rarityCache;
+  const sigs = list.map((s) => ({ name: s.name, v: signature(s) }));
+  const k = Math.min(5, Math.max(1, sigs.length - 1));
+  const scored = sigs.map((a, i) => {
+    const dists = [];
+    for (let j = 0; j < sigs.length; j++) if (j !== i) dists.push(sigDist(a.v, sigs[j].v));
+    dists.sort((x, y) => x - y);
+    let sum = 0; const n = Math.min(k, dists.length);
+    for (let t = 0; t < n; t++) sum += dists[t];
+    return { name: a.name, score: n ? sum / n : 0 };
+  });
+  const N = scored.length;
+  const scores = scored.map((x) => x.score);
+  const map = new Map();
+  for (const item of scored) {
+    let less = 0;
+    for (const sc of scores) if (sc < item.score) less++;
+    map.set(item.name, tierForPercentile(N > 1 ? less / (N - 1) : 0));
+  }
+  _rarityKey = key; _rarityCache = map;
+  return map;
+}
+// Convenience: tier of one scheme within a collection (falls back to the scheme alone).
+function rarityTier(scheme, schemes) {
+  return computeRarities(schemes && schemes.length ? schemes : [scheme]).get(scheme.name) || "Common";
+}
+
+// --- Progress (collection meta) ---
+function defaultProgress() { return { discovered: [], achievements: [], xp: 0 }; }
+
+function loadProgress(p = PROGRESS_PATH) {
+  try {
+    const data = JSON.parse(fs.readFileSync(p, "utf-8"));
+    return {
+      discovered: Array.isArray(data.discovered) ? data.discovered : [],
+      achievements: Array.isArray(data.achievements) ? data.achievements : [],
+      xp: typeof data.xp === "number" ? data.xp : 0,
+    };
+  } catch { return defaultProgress(); }
+}
+
+// Atomic write (temp + rename) so a crash can't corrupt progress.json.
+function saveProgress(progress, p = PROGRESS_PATH) {
+  const tmp = p + ".tmp";
+  fs.writeFileSync(tmp, JSON.stringify(progress, null, 2), "utf-8");
+  fs.renameSync(tmp, p);
+}
+
+// --- XP / level ---
+function levelForXp(xp) { return Math.floor((xp || 0) / 100) + 1; }
+
+// --- Achievements (all evaluable from server state) ---
+const ACHIEVEMENTS = [
+  { id: "discover_10",     label: "Scout — 10 themes discovered",        test: (p) => p.discovered.length >= 10 },
+  { id: "discover_100",    label: "Archivist — 100 themes discovered",   test: (p) => p.discovered.length >= 100 },
+  { id: "discover_all",    label: "Completionist — every theme found",   test: (p, c) => c.totalSchemes > 0 && p.discovered.length >= c.totalSchemes },
+  { id: "fav_10",          label: "Curator — 10 favorites",              test: (p, c) => c.favoritesCount >= 10 },
+  { id: "apply_legendary", label: "Legendary — applied a Legendary palette", test: (p, c) => c.lastTier === "Legendary" },
+  { id: "apply_brutal",    label: "Into the Void — applied a near-black palette", test: (p, c) => typeof c.lastBrightness === "number" && c.lastBrightness < 12 },
+];
+
+// Mutates progress.achievements; returns the newly-unlocked {id,label} list.
+function evaluateAchievements(progress, ctx) {
+  const now = (ctx && ctx.now) || Date.now();
+  const have = new Set(progress.achievements.map((a) => a.id));
+  const newly = [];
+  for (const def of ACHIEVEMENTS) {
+    if (have.has(def.id)) continue;
+    if (def.test(progress, ctx || {})) {
+      progress.achievements.push({ id: def.id, unlockedAt: now });
+      newly.push({ id: def.id, label: def.label });
+    }
+  }
+  return newly;
+}
+
 // --- External themes ---
 function httpsGet(url) {
   return new Promise((resolve, reject) => {
@@ -351,27 +491,32 @@ function applyColorScheme(name) {
 let shuffleInterval = null;
 let shuffleMs = 0;
 let shuffleFavsOnly = false;
+let shuffleRareOnly = false;
 let lastShuffleActivity = 0;
 
-function startShuffle(ms, favsOnly = false) {
+function startShuffle(ms, favsOnly = false, rareOnly = false) {
   stopShuffle();
   shuffleMs = ms;
   shuffleFavsOnly = favsOnly;
+  shuffleRareOnly = rareOnly;
   lastShuffleActivity = Date.now();
   shuffleInterval = setInterval(() => {
     // Auto-stop if the UI has gone quiet (tab closed) so we don't rewrite settings.json forever.
     if (Date.now() - lastShuffleActivity > 60000) { stopShuffle(); return; }
     const settings = readSettings();
     const current = getCurrentScheme(settings);
-    let pool;
+    let pool = settings.schemes || [];
     if (shuffleFavsOnly) {
       const favs = loadFavorites();
-      pool = favs.filter((n) => n !== current && settings.schemes.some((s) => s.name === n));
-    } else {
-      pool = settings.schemes.map((s) => s.name).filter((n) => n !== current);
+      pool = pool.filter((s) => favs.includes(s.name));
     }
-    if (pool.length === 0) return;
-    applyColorScheme(pool[Math.floor(Math.random() * pool.length)]);
+    if (shuffleRareOnly) {
+      const rar = computeRarities(settings.schemes || []);
+      pool = pool.filter((s) => ["Rare", "Epic", "Legendary"].includes(rar.get(s.name)));
+    }
+    const names = pool.map((s) => s.name).filter((n) => n !== current);
+    if (names.length === 0) return;
+    applyColorScheme(names[Math.floor(Math.random() * names.length)]);
   }, ms);
 }
 
@@ -379,6 +524,7 @@ function stopShuffle() {
   if (shuffleInterval) clearInterval(shuffleInterval);
   shuffleInterval = null;
   shuffleMs = 0;
+  shuffleRareOnly = false;
 }
 
 // --- Parse JSON body ---
@@ -530,7 +676,37 @@ const HTML = `<!DOCTYPE html>
       -webkit-background-clip: text; background-clip: text;
       -webkit-text-fill-color: transparent; color: transparent;
       filter: drop-shadow(0 1px 1px rgba(0,0,0,0.6));
+      white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+      transition: filter 0.18s ease, transform 0.18s ease;
     }
+    /* casino-slot lock flash on the header */
+    h1.slot-lock { filter: drop-shadow(0 0 14px var(--accent)) drop-shadow(0 1px 1px rgba(0,0,0,0.6)); transform: scale(1.04); }
+    @media (prefers-reduced-motion: reduce) { h1.slot-lock { transform: none; } }
+    /* jackpot payoff (Epic / Legendary) */
+    h1.jackpot { animation: jackpot-title 1.2s ease-in-out; }
+    @keyframes jackpot-title {
+      0%,100% { filter: drop-shadow(0 1px 1px rgba(0,0,0,0.6)); transform: none; }
+      20% { transform: scale(1.13) rotate(-1.5deg); filter: drop-shadow(0 0 22px #ffcf3f); }
+      45% { transform: scale(1.07) rotate(1.5deg); filter: drop-shadow(0 0 22px #c06bff); }
+      70% { transform: scale(1.1) rotate(-1deg); filter: drop-shadow(0 0 22px #4aa3ff); }
+    }
+    #confetti { position: fixed; inset: 0; pointer-events: none; z-index: 40; overflow: hidden; }
+    #confetti .glyph {
+      position: absolute; top: 6%; font-family: 'JetBrains Mono', monospace; font-weight: 700;
+      font-size: 1.05rem; text-shadow: 0 0 8px currentColor; opacity: 0;
+      animation: jackpot-glyph 1.5s ease-out forwards;
+    }
+    @keyframes jackpot-glyph {
+      0% { opacity: 0; transform: translateY(0) scale(0.5); }
+      14% { opacity: 1; }
+      100% { opacity: 0; transform: translate(var(--dx,0), -130px) scale(1.25) rotate(45deg); }
+    }
+    .app.shake { animation: app-shake 0.42s ease-in-out; }
+    @keyframes app-shake {
+      0%,100% { transform: translateX(0); } 20% { transform: translateX(-5px); }
+      40% { transform: translateX(5px); } 60% { transform: translateX(-3px); } 80% { transform: translateX(3px); }
+    }
+    @media (prefers-reduced-motion: reduce) { h1.jackpot, #confetti .glyph, .app.shake { animation: none; } }
     .subtitle { font-size: 0.82rem; color: var(--text-dim); font-weight: 500; letter-spacing: 0.01em; }
 
     /* Daft Punk helmet red LED scanner (Cylon sweep) */
@@ -612,8 +788,23 @@ const HTML = `<!DOCTYPE html>
       margin-left: auto; font-size: 0.68rem; opacity: 0.4;
       font-family: 'Inter', system-ui, sans-serif; font-weight: 500;
     }
-    .terminal-body { padding: 1rem 1.3rem; }
-    .terminal-body .line { white-space: pre; }
+    .terminal-body { padding: 1rem 1.3rem; min-height: 8.4rem; display: flex; flex-direction: column; justify-content: flex-end; overflow: hidden; }
+    .terminal-body .line { white-space: pre; line-height: 1.5; }
+    .terminal-body .line.fresh { animation: term-line-in 0.26s ease-out; }
+    @keyframes term-line-in { from { opacity: 0; transform: translateX(-4px); } to { opacity: 1; transform: none; } }
+    .terminal-input-line {
+      display: flex; align-items: center; padding: 0 1.3rem 0.9rem;
+      font-family: inherit; font-size: inherit; line-height: 1.6; white-space: pre;
+    }
+    .term-input {
+      flex: 1; min-width: 0; background: transparent; border: none; outline: none;
+      font-family: inherit; font-size: inherit; line-height: inherit; padding: 0; margin: 0;
+      color: inherit; caret-color: currentColor;
+    }
+    .term-input::placeholder { color: currentColor; opacity: 0.32; }
+    .term-cursor { animation: term-blink 1.1s steps(2) infinite; }
+    @keyframes term-blink { 0%, 50% { opacity: 1; } 50.01%, 100% { opacity: 0; } }
+    @media (prefers-reduced-motion: reduce) { .terminal-body .line.fresh { animation: none; } .term-cursor { animation: none; } }
 
     /* 16-color ANSI palette strip */
     .palette-strip { display: flex; flex-direction: column; gap: 3px; padding: 0 1.3rem 1rem; }
@@ -803,27 +994,38 @@ const HTML = `<!DOCTYPE html>
     /* Scheme grid */
     .scheme-grid {
       display: grid;
-      grid-template-columns: repeat(auto-fill, minmax(250px, 1fr));
-      gap: 8px;
-      max-height: 55vh;
+      grid-template-columns: repeat(auto-fill, minmax(196px, 1fr));
+      gap: 6px;
+      max-height: 58vh;
       overflow-y: auto;
       padding-right: 4px;
+      scroll-behavior: auto;
     }
+    .scheme-grid.list { grid-template-columns: 1fr; gap: 3px; }
     .scheme-grid::-webkit-scrollbar { width: 5px; }
     .scheme-grid::-webkit-scrollbar-track { background: transparent; }
     .scheme-grid::-webkit-scrollbar-thumb { background: var(--border); border-radius: 4px; }
+    /* grid ⇄ list view toggle */
+    .view-toggle { display: flex; gap: 3px; flex-shrink: 0; }
+    .view-btn {
+      background: var(--surface-2); border: 1px solid var(--border); color: var(--text-faint);
+      border-radius: 7px; padding: 5px 9px; cursor: pointer; font-size: 0.8rem; line-height: 1;
+      transition: all 0.18s ease;
+    }
+    .view-btn:hover { color: var(--text-mid); border-color: var(--border-strong); }
+    .view-btn.active { color: var(--accent); border-color: var(--border-strong); background: var(--accent-bg); }
 
     .scheme-card {
       border: 1px solid var(--card-border);
-      border-radius: 12px;
-      padding: 0.6rem 0.85rem;
+      border-radius: 9px;
+      padding: 0.42rem 0.65rem;
       cursor: pointer;
-      transition: all 0.2s ease;
+      transition: transform 0.16s ease, box-shadow 0.16s ease, border-color 0.16s ease;
       display: flex;
       align-items: center;
-      gap: 10px;
+      gap: 9px;
       position: relative;
-      box-shadow: 0 3px 10px var(--shadow), inset 0 1px 0 rgba(255,255,255,0.25);
+      box-shadow: 0 2px 7px var(--shadow), inset 0 1px 0 rgba(255,255,255,0.22);
     }
     /* glossy top sheen on each card */
     .scheme-card::before {
@@ -857,16 +1059,25 @@ const HTML = `<!DOCTYPE html>
       box-shadow: 0 2px 8px rgba(122,162,247,0.4);
     }
     .scheme-card.active .active-badge { display: block; }
+    /* compact one-line list view */
+    .scheme-grid.list .scheme-card { padding: 0.3rem 0.6rem; border-radius: 6px; gap: 9px;
+      box-shadow: 0 1px 5px var(--shadow); }
+    .scheme-grid.list .scheme-card::before { display: none; }
+    .scheme-grid.list .scheme-card:hover { transform: none; }
+    .scheme-grid.list .scheme-colors { grid-template-columns: repeat(6, 1fr); gap: 2px; }
+    .scheme-grid.list .scheme-colors .c { width: 8px; height: 8px; border-radius: 2px; }
+    .scheme-grid.list .card-rarity { position: static; margin-right: 2px; }
+    .scheme-grid.list .scheme-name { font-size: 0.74rem; }
 
     .scheme-colors {
       display: grid; grid-template-columns: repeat(3, 1fr); gap: 3px; flex-shrink: 0;
     }
     .scheme-colors .c {
-      width: 11px; height: 11px; border-radius: 3px;
+      width: 10px; height: 10px; border-radius: 3px;
       box-shadow: inset 0 0 0 1px rgba(0,0,0,0.15);
     }
     .scheme-name {
-      font-size: 0.76rem; flex: 1; font-weight: 500;
+      font-size: 0.75rem; flex: 1; font-weight: 500;
       overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
       letter-spacing: 0.01em;
     }
@@ -903,30 +1114,76 @@ const HTML = `<!DOCTYPE html>
     @keyframes spin { to { transform: rotate(360deg); } }
 
     /* Toast */
-    .toast {
-      position: fixed; bottom: 2rem; left: 50%;
-      transform: translateX(-50%) translateY(100px);
-      background:
-        linear-gradient(to bottom, rgba(255,255,255,0.5), rgba(255,255,255,0) 50%),
-        linear-gradient(135deg, var(--accent), var(--accent-2));
-      color: #0c0c0e;
-      border: 1px solid rgba(255,255,255,0.5);
-      padding: 0.6rem 1.6rem; border-radius: 12px;
-      font-weight: 600; font-size: 0.78rem;
-      font-family: 'Inter', system-ui, sans-serif;
-      letter-spacing: 0.01em;
-      transition: transform 0.3s cubic-bezier(0.34, 1.56, 0.64, 1);
-      pointer-events: none; z-index: 100;
-      box-shadow: 0 8px 24px rgba(122,162,247,0.3);
+    /* terminal decode-in glyphs */
+    .term-scram { text-shadow: 0 0 6px currentColor; }
+
+    /* rarity explainer panel */
+    #rarity-info-btn { font-style: normal; }
+    .info-panel {
+      margin: 0 0 0.9rem; padding: 0.85rem 1rem; border-radius: 12px;
+      border: 1px solid var(--border); background: var(--surface-2);
+      font-size: 0.78rem; line-height: 1.55; color: var(--text-mid);
     }
-    .toast.show { transform: translateX(-50%) translateY(0); animation: toast-glitch 0.32s steps(3) 1; }
-    @keyframes toast-glitch {
-      0%   { clip-path: inset(0 0 62% 0); transform: translateX(-53%) translateY(0); }
-      30%  { clip-path: inset(45% 0 0 0); transform: translateX(-47%) translateY(0); }
-      60%  { clip-path: inset(0 0 22% 0); transform: translateX(-50%) translateY(0); }
-      100% { clip-path: inset(0 0 0 0);   transform: translateX(-50%) translateY(0); }
-    }
-    @media (prefers-reduced-motion: reduce) { .toast.show { animation: none; } }
+    .info-panel strong { color: var(--text-strong); }
+    .info-panel em { color: var(--accent); font-style: normal; }
+    .rarity-legend { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 14px; margin-top: 0.7rem;
+      font-size: 0.72rem; color: var(--text-faint); }
+
+    /* Rarity badges */
+    .rarity { display:inline-flex; align-items:center; gap:4px; font-size:0.62rem; font-weight:700;
+      letter-spacing:0.06em; text-transform:uppercase; padding:2px 6px; border-radius:5px;
+      border:1px solid currentColor; background:rgba(0,0,0,0.35); }
+    .rarity::before { content:""; width:6px; height:6px; border-radius:50%; background:currentColor;
+      box-shadow:0 0 6px 1px currentColor; }
+    .rarity.Common    { color:#9aa3ad; }
+    .rarity.Uncommon  { color:#4cd07d; }
+    .rarity.Rare      { color:#4aa3ff; }
+    .rarity.Epic      { color:#c06bff; }
+    .rarity.Legendary { color:#ffcf3f; }
+    .card-rarity { position:absolute; left:8px; top:8px; z-index:2; }
+
+    .hud-strip { display:flex; gap:14px; align-items:center; justify-content:center; margin-top:0.85rem;
+      font-family:'JetBrains Mono', monospace; font-size:0.72rem; color:var(--text-dim); flex-wrap:wrap; }
+    .hud-stat { display:inline-flex; gap:4px; align-items:center; padding:3px 9px; border-radius:6px;
+      border:1px solid var(--border); background:var(--surface-2); }
+    .hud-stat b { color:var(--accent); font-weight:700; }
+    .hud-sub { color:var(--text-faint); }
+    .hud-sound { cursor:pointer; border:1px solid var(--border); background:var(--surface-2);
+      color:var(--accent); border-radius:6px; padding:3px 9px; font-size:0.8rem; line-height:1; }
+    .hud-sound.muted { color:var(--text-ghost); }
+
+    .reactor-overlay { position:absolute; inset:0; pointer-events:none; overflow:hidden;
+      border-radius:inherit; opacity:0; transition:opacity 0.15s; z-index:5; }
+    .reactor-overlay.spinning { opacity:1; }
+    .reactor-reel { position:absolute; left:0; right:0; top:50%; transform:translateY(-50%);
+      text-align:center; font-family:'JetBrains Mono', monospace; font-weight:700;
+      font-size:1.1rem; color:var(--accent); text-shadow:0 0 12px var(--accent);
+      white-space:nowrap; filter:blur(0.4px); }
+    .reactor-flash { position:absolute; inset:0; background:radial-gradient(circle at 50% 50%, var(--accent-soft), transparent 60%);
+      opacity:0; }
+    @keyframes reactor-burst { 0%{opacity:0;transform:scale(0.6);} 30%{opacity:0.85;} 100%{opacity:0;transform:scale(1.5);} }
+    .reactor-flash.burst { animation:reactor-burst 0.5s ease-out; }
+    .reactor-overlay.lock .reactor-reel { animation:reactor-lock 0.32s cubic-bezier(.2,1.4,.3,1); }
+    @keyframes reactor-lock { 0%{transform:translateY(-50%) scale(1.25);} 100%{transform:translateY(-50%) scale(1);} }
+    @media (prefers-reduced-motion: reduce) { .reactor-overlay { display:none; } }
+    .app { position:relative; }
+    .corner { position:fixed; width:26px; height:26px; border:2px solid var(--border-strong);
+      pointer-events:none; opacity:0.55; z-index:3; }
+    .corner.tl { top:14px; left:14px; border-right:0; border-bottom:0; }
+    .corner.tr { top:14px; right:14px; border-left:0; border-bottom:0; }
+    .corner.bl { bottom:14px; left:14px; border-right:0; border-top:0; }
+    .corner.br { bottom:14px; right:14px; border-left:0; border-top:0; }
+    .boot { position:fixed; inset:0; z-index:50; background:var(--bg);
+      display:flex; align-items:center; justify-content:center; transition:opacity 0.4s; }
+    .boot.done { opacity:0; pointer-events:none; }
+    .boot-lines { font-family:'JetBrains Mono', monospace; font-size:0.85rem; color:var(--accent);
+      text-shadow:0 0 8px var(--accent); min-width:320px; }
+    .boot-lines .bl-line { opacity:0; white-space:pre; }
+    .boot-lines .bl-line.in { opacity:1; }
+    @keyframes glitch-in { 0%{opacity:0;transform:translateX(-2px);} 20%{opacity:1;transform:translateX(2px);}
+      40%{transform:translateX(-1px);} 100%{transform:translateX(0);} }
+    .glitch { animation:glitch-in 0.28s steps(2); }
+    @media (prefers-reduced-motion: reduce) { .boot { display:none; } .glitch { animation:none; } }
   </style>
 </head>
 <body>
@@ -947,12 +1204,24 @@ const HTML = `<!DOCTYPE html>
   <span class="bubble" style="left:88%;width:4px;height:4px;animation-duration:18s;animation-delay:-6s"></span>
   <span class="bubble" style="left:95%;width:6px;height:6px;animation-duration:23s;animation-delay:-10s"></span>
 </div>
+<div class="boot" id="boot" aria-hidden="true">
+  <div class="boot-lines" id="boot-lines"></div>
+</div>
+<div id="confetti" aria-hidden="true"></div>
 <div class="app">
+  <span class="corner tl"></span><span class="corner tr"></span>
+  <span class="corner bl"></span><span class="corner br"></span>
   <header>
     <button class="ui-toggle" id="ui-toggle" onclick="toggleUiTheme()" title="Toggle Gold / Chrome helmet">&#9737;</button>
-    <h1>The Terminalizer</h1>
+    <h1 id="app-title">The Terminalizer</h1>
     <p class="subtitle">Randomize, preview, and hot-swap your Windows Terminal themes</p>
     <div class="red-scanner" aria-hidden="true"><span class="led"></span></div>
+    <div class="hud-strip" id="hud-strip" aria-live="polite">
+      <span class="hud-stat" title="Themes discovered">◈ <b id="hud-discovered">0</b><span class="hud-sub"> / <span id="hud-total">0</span></span></span>
+      <span class="hud-stat" title="Level">LVL <b id="hud-level">1</b></span>
+      <span class="hud-stat" id="hud-xp" title="XP">XP <b id="hud-xp-val">0</b></span>
+      <button class="hud-sound" id="sound-toggle" title="Toggle sound" onclick="toggleSound()">♪</button>
+    </div>
   </header>
 
   <!-- Terminal Preview -->
@@ -962,9 +1231,19 @@ const HTML = `<!DOCTYPE html>
       <div class="terminal-dot" style="background:#ffbd2e"></div>
       <div class="terminal-dot" style="background:#28c840"></div>
       <span id="tp-name">Loading...</span>
+      <span id="tp-rarity" class="rarity" style="margin-left:auto"></span>
     </div>
     <div class="terminal-body" id="tp-body"></div>
+    <div class="terminal-input-line" id="tp-inputline">
+      <span id="tp-prompt"></span><input id="term-input" class="term-input" type="text" autocomplete="off"
+        autocapitalize="off" spellcheck="false" aria-label="Terminal command input"
+        placeholder="type a command — try: help">
+    </div>
     <div class="palette-strip" id="tp-palette"></div>
+    <div class="reactor-overlay" id="reactor-overlay" aria-hidden="true">
+      <div class="reactor-reel" id="reactor-reel"></div>
+      <div class="reactor-flash" id="reactor-flash"></div>
+    </div>
   </div>
 
   <!-- Controls -->
@@ -984,6 +1263,7 @@ const HTML = `<!DOCTYPE html>
         <option value="1800000">30m</option>
       </select>
       <button class="btn btn-secondary" id="favs-only-btn" onclick="toggleFavsOnly()">Favs only</button>
+      <button class="btn btn-secondary" id="rare-only-btn" onclick="toggleRareOnly()" title="Auto-shuffle only Rare, Epic & Legendary themes">Rare+</button>
     </div>
     <div class="font-controls">
       <label>Size</label>
@@ -1032,17 +1312,46 @@ const HTML = `<!DOCTYPE html>
       <button class="filter-pill" data-filter="dark" onclick="setFilter('dark')">Dark</button>
       <button class="filter-pill" data-filter="light" onclick="setFilter('light')">Light</button>
     </div>
+    <select class="shuffle-select" id="rarity-select" onchange="setRarity(this.value)" title="Filter by rarity">
+      <option value="all">All tiers</option>
+      <option value="Common">Common</option>
+      <option value="Uncommon">Uncommon</option>
+      <option value="Rare">Rare</option>
+      <option value="Epic">Epic</option>
+      <option value="Legendary">Legendary</option>
+    </select>
+    <button class="view-btn" id="rarity-info-btn" onclick="toggleRarityInfo()" title="How does rarity work?">&#9432;</button>
     <select class="shuffle-select" id="sort-select" onchange="setSort(this.value)" title="Sort themes">
       <option value="az">A&ndash;Z</option>
       <option value="brightness">Brightness</option>
       <option value="hue">Hue</option>
     </select>
+    <div class="view-toggle">
+      <button class="view-btn active" data-view="grid" onclick="setView('grid')" title="Grid view">&#9638;</button>
+      <button class="view-btn" data-view="list" onclick="setView('list')" title="List view">&#9776;</button>
+    </div>
+  </div>
+
+  <div class="info-panel" id="rarity-info" hidden>
+    <strong>Rarity = uniqueness, not availability.</strong> Every theme installs the same way &mdash;
+    rarity measures how <em>unusual</em> a palette is among all <span id="rarity-info-total">531</span>
+    installed. Each theme gets a colour "signature" (the hue, saturation &amp; lightness of its background,
+    foreground and 6 core ANSI colours). Themes are ranked by how far their signature sits from its nearest
+    look-alikes: a palette with many siblings is <span class="rarity Common">Common</span>; a true outlier
+    nobody else resembles is <span class="rarity Legendary">Legendary</span>. Tiers are percentiles of that
+    uniqueness score:
+    <div class="rarity-legend">
+      <span class="rarity Legendary">Legendary</span> top 3%
+      <span class="rarity Epic">Epic</span> next 7%
+      <span class="rarity Rare">Rare</span> next 20%
+      <span class="rarity Uncommon">Uncommon</span> next 35%
+      <span class="rarity Common">Common</span> the rest
+    </div>
   </div>
 
   <div class="scheme-grid" id="scheme-grid"></div>
 </div>
 
-<div class="toast" id="toast"></div>
 
 <script>
   let installedSchemes = [];
@@ -1055,6 +1364,8 @@ const HTML = `<!DOCTYPE html>
   let activeSort = "az";
   let shuffleActive = false;
   let shuffleFavsOnly = false;
+  let shuffleRareOnly = false;
+  let activeRarity = "all";
   let currentOpacity = 95;
   let externalLoaded = false;
   let opacityTimer = null;
@@ -1062,6 +1373,76 @@ const HTML = `<!DOCTYPE html>
   let histIndex = -1; // current position in history
   let overrides = { cursorColor: null, selectionBackground: null };
   let applyAll = false;
+  let progress = { discovered: [], achievements: [], xp: 0 };
+  let totalSchemes = 0;
+  let termLines = [];   // live terminal session: each entry is an array of [text, colorKey] tokens
+  let gridView = "grid";
+  try { gridView = localStorage.getItem("terminalizer-view") === "list" ? "list" : "grid"; } catch (e) {}
+  let gridItems = [];   // full list of card HTML strings for the current view
+  let gridRendered = 0; // how many have been appended (windowed rendering)
+  const GRID_BATCH = 60;
+  let audioArmed = false; // true after the first user gesture (Web Audio autoplay gate)
+
+  // --- Synthesized SFX (Web Audio, zero files) ---
+  const sfx = (function () {
+    let ctx = null, master = null, hum = null;
+    let enabled = true;
+    try { enabled = localStorage.getItem("terminalizer-sound") !== "off"; } catch (e) {}
+
+    function ensure() {
+      if (ctx) return;
+      const AC = window.AudioContext || window.webkitAudioContext;
+      if (!AC) { enabled = false; return; }
+      ctx = new AC();
+      master = ctx.createGain();
+      master.gain.value = 0.18;
+      master.connect(ctx.destination);
+    }
+    function blip(freq, dur, type, gain) {
+      if (!enabled) return;
+      ensure(); if (!ctx) return;
+      const o = ctx.createOscillator(), g = ctx.createGain();
+      o.type = type || "square"; o.frequency.value = freq;
+      g.gain.setValueAtTime(0.0001, ctx.currentTime);
+      g.gain.exponentialRampToValueAtTime(gain || 0.3, ctx.currentTime + 0.005);
+      g.gain.exponentialRampToValueAtTime(0.0001, ctx.currentTime + (dur || 0.08));
+      o.connect(g); g.connect(master);
+      o.start(); o.stop(ctx.currentTime + (dur || 0.08) + 0.02);
+    }
+    function startHum() {
+      if (!enabled || hum) return;
+      ensure(); if (!ctx) return;
+      const o = ctx.createOscillator(), g = ctx.createGain();
+      o.type = "sawtooth"; o.frequency.value = 54;
+      g.gain.value = 0.03; o.connect(g); g.connect(master); o.start();
+      hum = { o: o, g: g };
+    }
+    function stopHum() { if (hum) { try { hum.o.stop(); } catch (e) {} hum = null; } }
+
+    return {
+      arm: function () { if (!enabled) return; ensure(); if (ctx && ctx.state === "suspended") ctx.resume(); startHum(); },
+      hover: function () { blip(880, 0.04, "sine", 0.06); },
+      tick: function () { blip(320 + Math.random() * 80, 0.03, "square", 0.12); },
+      lock: function (tier) {
+        const lvl = { Common: 0, Uncommon: 1, Rare: 2, Epic: 3, Legendary: 4 }[tier] || 0;
+        blip(130 + lvl * 16, 0.18, "sawtooth", 0.34);                 // thunk, pitch rises with rarity
+        blip(330 + lvl * 95, 0.16, "triangle", 0.16 + lvl * 0.02);    // chime on top
+      },
+      coin: function () { // jackpot fanfare for Epic/Legendary
+        [784, 1175, 1568, 2093].forEach(function (f, i) { setTimeout(function () { blip(f, 0.13, "square", 0.2); }, i * 65); });
+      },
+      confirm: function () { blip(520, 0.1, "triangle", 0.22); setTimeout(function () { blip(780, 0.1, "triangle", 0.18); }, 70); },
+      favorite: function () { blip(660, 0.08, "sine", 0.2); setTimeout(function () { blip(990, 0.12, "sine", 0.18); }, 60); },
+      achievement: function () { [523, 659, 784, 1047].forEach(function (f, i) { setTimeout(function () { blip(f, 0.16, "triangle", 0.22); }, i * 90); }); },
+      isEnabled: function () { return enabled; },
+      setEnabled: function (v) {
+        enabled = v;
+        try { localStorage.setItem("terminalizer-sound", v ? "on" : "off"); } catch (e) {}
+        if (v) this.arm(); else stopHum();
+      }
+    };
+  })();
+  window.sfx = sfx;
 
   function hex6(v) { return /^#[0-9a-fA-F]{6}$/.test(v || "") ? v : null; }
 
@@ -1080,14 +1461,25 @@ const HTML = `<!DOCTYPE html>
   }
 
   function filterSchemes(list) {
-    if (activeFilter === "all") return list;
-    return list.filter(s => activeFilter === "light" ? isLightTheme(s) : !isLightTheme(s));
+    let out = list;
+    if (activeFilter !== "all") out = out.filter(s => activeFilter === "light" ? isLightTheme(s) : !isLightTheme(s));
+    if (activeRarity !== "all") out = out.filter(s => s.rarity === activeRarity);
+    return out;
   }
 
   function setFilter(f) {
     activeFilter = f;
     document.querySelectorAll(".filter-pill").forEach(p => p.classList.toggle("active", p.dataset.filter === f));
     renderGrid();
+  }
+
+  function setRarity(v) { activeRarity = v; renderGrid(); }
+
+  function toggleRarityInfo() {
+    const p = document.getElementById("rarity-info");
+    document.getElementById("rarity-info-total").textContent = totalSchemes || "all";
+    p.hidden = !p.hidden;
+    document.getElementById("rarity-info-btn").classList.toggle("active", !p.hidden);
   }
 
   function brightness(s) {
@@ -1122,11 +1514,13 @@ const HTML = `<!DOCTYPE html>
     const res = await fetch("/api/state");
     const data = await res.json();
     installedSchemes = data.schemes;
+    totalSchemes = data.schemes.length;
     currentScheme = data.current;
     currentSize = data.font.size;
     favorites = data.favorites;
     shuffleActive = data.shuffle.active;
     shuffleFavsOnly = data.shuffle.favsOnly || false;
+    shuffleRareOnly = data.shuffle.rareOnly || false;
     currentOpacity = data.opacity;
     document.getElementById("installed-count").textContent = installedSchemes.length;
     document.getElementById("favorites-count").textContent = favorites.length;
@@ -1135,6 +1529,7 @@ const HTML = `<!DOCTYPE html>
       document.getElementById("shuffle-interval").value = String(data.shuffle.ms);
     }
     document.getElementById("favs-only-btn").classList.toggle("active", shuffleFavsOnly);
+    document.getElementById("rare-only-btn").classList.toggle("active", shuffleRareOnly);
     document.getElementById("font-size").textContent = currentSize;
     document.getElementById("opacity-slider").value = currentOpacity;
     document.getElementById("opacity-value").textContent = currentOpacity + "%";
@@ -1144,8 +1539,169 @@ const HTML = `<!DOCTYPE html>
     history = [currentScheme];
     histIndex = 0;
     updateHistButtons();
+    applyProgress(data.progress);
+    // Seed the live terminal (no sfx — audio isn't armed yet)
+    termLines = [
+      { tokens: [["terminalizer", "green"], [" ❯ ", "accent"], ["status", "fg"]] },
+      { tokens: [["  ◈ ", "cyan"], ["online · ", "green"], [totalSchemes + " themes loaded", "fg"]] },
+      { tokens: [["  ▸ ", "dim"], ["active: ", "fg"], [currentScheme, "accent"]] }
+    ];
+    document.querySelectorAll(".view-btn").forEach(b => b.classList.toggle("active", b.dataset.view === gridView));
     renderPreview();
+    renderTerminal();   // paint the seeded session once (settled, no animation)
+    discover(currentScheme);
     renderGrid();
+  }
+
+  // --- Live terminal session: real actions print as themed lines inside the preview ---
+  function termColor(s, key) {
+    const map = { fg: s.foreground, green: s.green, blue: s.blue, cyan: s.cyan,
+      yellow: s.yellow, purple: s.purple, red: s.red, accent: s.cyan || s.blue || s.foreground };
+    return map[key] || s.foreground;
+  }
+  // Queue lines so each one visibly decodes in before the next starts (sequential, not stomped).
+  let termQueue = [];
+  let termPumping = false;
+  function termPush(tokens) {
+    termQueue.push(tokens);
+    if (!termPumping) pumpTerm();
+  }
+  function pumpTerm() {
+    if (!termQueue.length) { termPumping = false; return; }
+    termPumping = true;
+    termLines.push({ tokens: termQueue.shift(), fresh: true });
+    if (termLines.length > 6) termLines.shift();
+    if (window.sfx && audioArmed) sfx.tick();
+    renderTerminal(function () { setTimeout(pumpTerm, 80); });
+  }
+  function termCmd(text) {
+    termPush([["terminalizer", "green"], [" ❯ ", "accent"], [text, "fg"]]);
+  }
+  // Log an applied theme as command + the real settings.json change. prev = previous scheme name.
+  function termApply(cmd, name, tier, prev) {
+    termCmd(cmd);
+    if (prev && prev !== name) {
+      termPush([["  ~ ", "dim"], ["colorScheme ", "cyan"], ['"' + prev + '"', "red"],
+        [" → ", "dim"], ['"' + name + '"', "green"], ["  [" + (tier || "Common") + "]", "dim"]]);
+    } else {
+      termPush([["  → ", "dim"], ["colorScheme = ", "cyan"], ['"' + name + '"', "green"], ["  [" + (tier || "Common") + "]", "dim"]]);
+    }
+  }
+  // Decode-in effect: unsettled characters cascade through random glyphs (in the line's own
+  // themed color), then resolve to the real text.
+  const SCRAMBLE_GLYPHS = "ﾊﾐﾋｰｳｼﾅﾓﾆｻﾜﾂｵﾘｱﾎﾃﾏｹﾒｴｶｷﾑﾕﾗｾﾈｽﾀﾇﾌ0123456789:.=*+<>/\\|";
+  let scrambleTimer = null;
+
+  function lineCharsFor(tokens, s) {
+    const out = [];
+    for (const tk of tokens) {
+      const dim = tk[1] === "dim";
+      const col = dim ? s.foreground : termColor(s, tk[1]);
+      for (const ch of String(tk[0])) out.push({ ch: ch, col: col, dim: dim }); // iterate code points (emoji-safe)
+    }
+    return out;
+  }
+  // Render the first (revealed) chars as their real selves; the rest as random glyphs in the same color.
+  function charsToHtml(chars, revealed) {
+    let html = "";
+    for (let i = 0; i < chars.length; i++) {
+      const c = chars[i];
+      const dimCss = c.dim ? ";opacity:0.5" : "";
+      if (i < revealed || c.ch === " ") {
+        html += '<span style="color:' + esc(c.col) + dimCss + '">' + esc(c.ch) + '</span>';
+      } else {
+        const g = SCRAMBLE_GLYPHS.charAt(Math.floor(Math.random() * SCRAMBLE_GLYPHS.length));
+        html += '<span class="term-scram" style="color:' + esc(c.col) + dimCss + '">' + esc(g) + '</span>';
+      }
+    }
+    return html;
+  }
+  function promptHtml(s) {
+    return '<span style="color:' + esc(s.green) + '">terminalizer</span>' +
+      '<span style="color:' + esc(termColor(s, "accent")) + '"> &#10095; </span>';
+  }
+  // The input-line prompt + caret recolor with the theme (it lives outside the pumped log area).
+  function setPrompt(s) {
+    const p = document.getElementById("tp-prompt");
+    const inp = document.getElementById("term-input");
+    if (p) p.innerHTML = promptHtml(s);
+    if (inp) { inp.style.color = s.foreground; inp.style.caretColor = s.foreground; }
+  }
+  function scrambleLine(el, chars, onDone) {
+    if (scrambleTimer) clearInterval(scrambleTimer);
+    let frame = 0;
+    const total = chars.length;
+    const steps = Math.max(6, Math.round(total * 0.5));
+    scrambleTimer = setInterval(function () {
+      frame++;
+      const revealed = Math.min(total, Math.round((frame / steps) * total));
+      el.innerHTML = charsToHtml(chars, revealed);
+      if (frame >= steps) {
+        clearInterval(scrambleTimer); scrambleTimer = null;
+        el.innerHTML = charsToHtml(chars, total);
+        if (onDone) onDone();
+      }
+    }, 24);
+  }
+  // onDone (optional) fires once the freshly-added line finishes decoding (drives the pump).
+  function renderTerminal(onDone) {
+    const body = document.getElementById("tp-body");
+    const s = installedSchemes.find(x => x.name === currentScheme);
+    if (!body || !s) { if (onDone) onDone(); return; }
+    const reduce = prefersReducedMotion();
+    let freshChars = null;
+    let html = "";
+    for (const line of termLines) {
+      const chars = lineCharsFor(line.tokens, s);
+      const isFresh = line.fresh && !reduce;
+      html += '<div class="line"' + (isFresh ? ' data-fresh="1"' : '') + '>' +
+        charsToHtml(chars, isFresh ? 0 : chars.length) + '</div>';
+      if (isFresh) freshChars = chars;
+      line.fresh = false;
+    }
+    body.innerHTML = html;
+    setPrompt(s);
+    const el = body.querySelector('[data-fresh]');
+    if (el && freshChars) scrambleLine(el, freshChars, onDone);
+    else if (onDone) onDone();
+  }
+
+  // A single indented result line in the terminal.
+  function termResult(text, key) { termPush([["  ", "fg"], [String(text), key || "dim"]]); }
+  function termHelp() {
+    termResult("commands: random · apply <name> · fav · surprise · undo · redo · dark · light · sound · rarity · clear · help", "fg");
+  }
+  function applyByQuery(q) {
+    if (!q) { termResult("usage: apply <theme name>", "yellow"); return; }
+    const ql = q.toLowerCase();
+    const m = installedSchemes.find(s => s.name.toLowerCase() === ql)
+      || installedSchemes.find(s => s.name.toLowerCase().startsWith(ql))
+      || installedSchemes.find(s => s.name.toLowerCase().includes(ql));
+    if (m) pickScheme(m.name);
+    else termResult('no theme matching "' + q + '"', "red");
+  }
+  // Parse and run a typed terminal command.
+  function runCommand(raw) {
+    const cmd = (raw || "").trim();
+    if (!cmd) return;
+    termCmd(cmd);                       // echo the typed line into the log
+    const parts = cmd.split(" ").filter(function (x) { return x.length; });
+    const v = parts.shift().toLowerCase();
+    const arg = parts.join(" ");
+    if (v === "random" || v === "rand" || v === "r") randomize();
+    else if (v === "apply" || v === "use" || v === "set") applyByQuery(arg);
+    else if (v === "fav" || v === "star" || v === "favorite") { if (currentScheme) toggleFav(currentScheme); }
+    else if (v === "surprise") surprise();
+    else if (v === "undo") undoTheme();
+    else if (v === "redo") redoTheme();
+    else if (v === "dark") setFilter("dark");
+    else if (v === "light") setFilter("light");
+    else if (v === "sound" || v === "mute") toggleSound();
+    else if (v === "rarity" || v === "info") toggleRarityInfo();
+    else if (v === "find" || v === "search") { document.getElementById("search").value = arg; renderGrid(); termResult('searching "' + arg + '"', "cyan"); }
+    else if (v === "clear" || v === "cls") { termQueue = []; termPumping = false; termLines = []; renderTerminal(); }
+    else if (v === "help" || v === "?" || v === "commands") termHelp();
+    else termResult('unknown command "' + v + '" — try: help', "red");
   }
 
   function renderPreview() {
@@ -1153,36 +1709,21 @@ const HTML = `<!DOCTYPE html>
     if (!s) return;
     const preview = document.getElementById("terminal-preview");
     const titlebar = document.getElementById("tp-titlebar");
-    const body = document.getElementById("tp-body");
     preview.style.background = s.background;
     titlebar.style.background = s.background;
     titlebar.style.borderBottom = "1px solid " + s.brightBlack;
-    document.getElementById("tp-name").textContent = currentScheme;
-    document.getElementById("tp-name").style.color = s.foreground;
+    const nameEl = document.getElementById("tp-name");
+    nameEl.textContent = currentScheme;
+    nameEl.style.color = s.foreground;
+    nameEl.classList.remove("glitch"); void nameEl.offsetWidth; nameEl.classList.add("glitch");
+    const rEl = document.getElementById("tp-rarity");
+    rEl.className = s.rarity ? "rarity " + s.rarity : "rarity";
+    rEl.textContent = s.rarity || "";
+    rEl.style.display = s.rarity ? "" : "none";
 
-    // Escape color values before concatenating into innerHTML (a malformed scheme color can't inject markup)
-    const fg = esc(s.foreground), green = esc(s.green), blue = esc(s.blue),
-      cyan = esc(s.cyan), yellow = esc(s.yellow), purple = esc(s.purple), red = esc(s.red);
-    body.innerHTML =
-      '<div class="line"><span style="color:' + green + '">maram@dev</span>' +
-      '<span style="color:' + fg + '">:</span>' +
-      '<span style="color:' + blue + '">~/projects</span>' +
-      '<span style="color:' + fg + '">$ </span>' +
-      '<span style="color:' + fg + '">node server.js</span></div>' +
-      '<div class="line"><span style="color:' + cyan + '">INFO</span>' +
-      '<span style="color:' + fg + '">  Server running on port </span>' +
-      '<span style="color:' + yellow + '">3456</span></div>' +
-      '<div class="line"><span style="color:' + green + '">OK</span>' +
-      '<span style="color:' + fg + '">    Loaded </span>' +
-      '<span style="color:' + purple + '">12 routes</span></div>' +
-      '<div class="line"><span style="color:' + red + '">WARN</span>' +
-      '<span style="color:' + fg + '">  No .env file found, using defaults</span></div>' +
-      '<div class="line"><span style="color:' + green + '">maram@dev</span>' +
-      '<span style="color:' + fg + '">:</span>' +
-      '<span style="color:' + blue + '">~/projects</span>' +
-      '<span style="color:' + yellow + '"> (main) </span>' +
-      '<span style="color:' + fg + '">$ </span>' +
-      '<span style="color:' + fg + '; opacity: 0.4">_</span></div>';
+    // (The live terminal log repaints via the line pump, not here, so an in-progress
+    //  decode animation is never clobbered by a theme repaint.)
+    setPrompt(s);   // the input-line prompt + caret do recolor here
 
     // 16-color ANSI palette strip (normal row + bright row)
     const normal = ["black", "red", "green", "yellow", "blue", "purple", "cyan", "white"];
@@ -1223,7 +1764,27 @@ const HTML = `<!DOCTYPE html>
         .map(t => externalCard(t));
     }
 
-    grid.innerHTML = items.join("");
+    grid.className = "scheme-grid" + (gridView === "list" ? " list" : "");
+    gridItems = items;
+    gridRendered = 0;
+    grid.innerHTML = "";
+    grid.scrollTop = 0;
+    appendGridBatch();
+  }
+
+  // Windowed rendering: append cards in batches so 500+ themes stay light and smooth.
+  function appendGridBatch() {
+    if (gridRendered >= gridItems.length) return;
+    const grid = document.getElementById("scheme-grid");
+    grid.insertAdjacentHTML("beforeend", gridItems.slice(gridRendered, gridRendered + GRID_BATCH).join(""));
+    gridRendered += GRID_BATCH;
+  }
+
+  function setView(v) {
+    gridView = v === "list" ? "list" : "grid";
+    try { localStorage.setItem("terminalizer-view", gridView); } catch (e) {}
+    document.querySelectorAll(".view-btn").forEach(b => b.classList.toggle("active", b.dataset.view === gridView));
+    renderGrid();
   }
 
   function schemeCard(s) {
@@ -1234,6 +1795,7 @@ const HTML = `<!DOCTYPE html>
     const fg = s.foreground || "#ccc";
     return '<div class="scheme-card' + isActive + '" data-name="' + esc(s.name) + '" style="background:' + esc(bg) + ';">' +
       '<div class="active-badge">&#10003;</div>' +
+      (s.rarity ? '<span class="rarity ' + esc(s.rarity) + ' card-rarity" title="' + esc(s.rarity) + '"></span>' : '') +
       '<div class="scheme-colors">' + colors.map(c => '<div class="c" style="background:' + esc(c) + '"></div>').join("") + '</div>' +
       '<div class="scheme-name" style="color:' + esc(fg) + '">' + esc(s.name) + '</div>' +
       '<button class="fav-btn' + (isFav ? ' favorited' : '') + '" data-fav="' + esc(s.name) + '" title="Toggle favorite">' +
@@ -1277,46 +1839,174 @@ const HTML = `<!DOCTYPE html>
     return res.json();
   }
 
+  let reactorBusy = false;
+  const prefersReducedMotion = () =>
+    window.matchMedia && window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+
+  // --- The header "THE TERMINALIZER" doubles as a casino slot machine / message display ---
+  const H1_DEFAULT = "The Terminalizer";
+  let headerTimer = null;   // reel (setTimeout) or scramble (setInterval) handle
+  let headerHold = null;    // pending revert-to-title timeout
+
+  function clearHeaderTimer() {
+    if (headerTimer) { clearTimeout(headerTimer); clearInterval(headerTimer); headerTimer = null; }
+  }
+  // Scramble the header toward the target text, then call onDone.
+  function scrambleText(target, onDone) {
+    const h = document.getElementById("app-title");
+    if (!h) { if (onDone) onDone(); return; }
+    if (prefersReducedMotion()) { h.textContent = target; if (onDone) onDone(); return; }
+    clearHeaderTimer();
+    const chars = Array.from(target);
+    const total = chars.length;
+    let frame = 0;
+    const steps = Math.max(8, total);
+    headerTimer = setInterval(function () {
+      frame++;
+      const revealed = Math.floor((frame / steps) * total);
+      let out = "";
+      for (let i = 0; i < total; i++) {
+        out += (i < revealed || chars[i] === " ") ? chars[i]
+          : SCRAMBLE_GLYPHS.charAt(Math.floor(Math.random() * SCRAMBLE_GLYPHS.length));
+      }
+      h.textContent = out;
+      if (frame >= steps) { clearInterval(headerTimer); headerTimer = null; h.textContent = target; if (onDone) onDone(); }
+    }, 30);
+  }
+  function revertHeaderSoon() {
+    if (headerHold) clearTimeout(headerHold);
+    headerHold = setTimeout(function () { scrambleText(H1_DEFAULT); }, 1900);
+  }
+  // Quick header slot to a theme name on a direct pick (won't interrupt an active spin).
+  function headerFlash(text) {
+    if (headerTimer) return;
+    scrambleText(String(text));
+    revertHeaderSoon();
+  }
+  // Casino payoff for a high-tier result: title burst, glyph confetti, coin chord, gentle shake.
+  function jackpot(tier) {
+    if (window.sfx) sfx.coin();
+    if (prefersReducedMotion()) return;
+    const h = document.getElementById("app-title");
+    if (h) { h.classList.add("jackpot"); setTimeout(function () { h.classList.remove("jackpot"); }, 1300); }
+    const app = document.querySelector(".app");
+    if (app) { app.classList.remove("shake"); void app.offsetWidth; app.classList.add("shake");
+      setTimeout(function () { app.classList.remove("shake"); }, 450); }
+    const layer = document.getElementById("confetti");
+    if (layer) {
+      const col = tier === "Legendary" ? "#ffcf3f" : "#c06bff";
+      for (let i = 0; i < 20; i++) {
+        const g = document.createElement("span");
+        g.className = "glyph";
+        g.textContent = SCRAMBLE_GLYPHS.charAt(Math.floor(Math.random() * SCRAMBLE_GLYPHS.length));
+        g.style.left = (8 + Math.random() * 84) + "%";
+        g.style.color = col;
+        g.style.setProperty("--dx", (Math.random() * 140 - 70) + "px");
+        g.style.animationDelay = (Math.random() * 0.18).toFixed(2) + "s";
+        layer.appendChild(g);
+        setTimeout((function (el) { return function () { el.remove(); }; })(g), 1700);
+      }
+    }
+  }
+  function maybeJackpot(tier) { if (tier === "Epic" || tier === "Legendary") jackpot(tier); }
+
+  // Casino slot: the header cycles random theme names, decelerates, locks on finalName, then onLock().
+  function runReactor(finalName, tier, onLock) {
+    const h = document.getElementById("app-title");
+    if (!h || prefersReducedMotion()) { if (onLock) onLock(); revertHeaderSoon(); return; }
+    clearHeaderTimer();
+    if (headerHold) { clearTimeout(headerHold); headerHold = null; }
+    const pool = installedSchemes.map(s => s.name);
+    const names = pool.length ? pool : [finalName];
+    let t = 0;
+    function tick() {
+      if (t >= 1) return lock();
+      h.textContent = names[Math.floor(Math.random() * names.length)];
+      if (window.sfx) sfx.tick();
+      t += 0.05 + t * 0.04;
+      headerTimer = setTimeout(tick, 40 + t * 240);
+    }
+    function lock() {
+      headerTimer = null;
+      h.classList.add("slot-lock");
+      scrambleText(finalName, function () {
+        if (window.sfx) sfx.lock(tier);
+        maybeJackpot(tier);
+        setTimeout(function () { h.classList.remove("slot-lock"); }, 420);
+        if (onLock) onLock();
+        revertHeaderSoon();
+      });
+    }
+    tick();
+  }
+
   async function randomize() {
-    const res = await fetch("/api/randomize", { method: "POST" });
-    const data = await res.json();
-    currentScheme = data.scheme;
-    recordHistory(currentScheme);
-    renderPreview();
-    renderGrid();
-    showToast("Switched to " + data.scheme);
+    if (reactorBusy) return;            // ignore re-entry; spin is short
+    reactorBusy = true;                 // claim before the await so a rapid double-press can't slip through
+    let data;
+    try {
+      const res = await fetch("/api/randomize", { method: "POST" });
+      data = await res.json();
+    } catch (e) {
+      reactorBusy = false;
+      showToast("Couldn't randomize — try again");
+      return;
+    }
+    const tier = (installedSchemes.find(s => s.name === data.scheme) || {}).rarity || "Common";
+    runReactor(data.scheme, tier, () => {
+      const prev = currentScheme;
+      currentScheme = data.scheme;
+      termApply("randomize", data.scheme, tier, prev);
+      recordHistory(currentScheme);
+      discover(currentScheme);
+      renderPreview();
+      renderGrid();
+      reactorBusy = false;             // cleared on completion; both reduced-motion and reel paths reach here
+    });
   }
 
   async function pickScheme(name) {
     const data = await setSchemeServer(name);
     if (data.error) { showToast(data.error); return; }
+    const prev = currentScheme;
     currentScheme = data.scheme;
+    const pickedTier = (installedSchemes.find(s => s.name === data.scheme) || {}).rarity;
+    if (window.sfx) sfx.confirm();
+    headerFlash(data.scheme);
+    maybeJackpot(pickedTier);
+    termApply('apply "' + data.scheme + '"', data.scheme, pickedTier, prev);
+    discover(currentScheme);
     recordHistory(currentScheme);
     renderPreview();
     renderGrid();
-    showToast(data.scheme);
   }
 
   async function undoTheme() {
     if (histIndex <= 0) return;
     const name = history[--histIndex];
+    const prev = currentScheme;
     await setSchemeServer(name);
     currentScheme = name;
+    headerFlash(name);
+    termApply("undo", name, (installedSchemes.find(s => s.name === name) || {}).rarity, prev);
+    discover(name);
     renderPreview();
     renderGrid();
     updateHistButtons();
-    showToast("Undo → " + name);
   }
 
   async function redoTheme() {
     if (histIndex >= history.length - 1) return;
     const name = history[++histIndex];
+    const prev = currentScheme;
     await setSchemeServer(name);
     currentScheme = name;
+    headerFlash(name);
+    termApply("redo", name, (installedSchemes.find(s => s.name === name) || {}).rarity, prev);
+    discover(name);
     renderPreview();
     renderGrid();
     updateHistButtons();
-    showToast("Redo → " + name);
   }
 
   async function randomFav() {
@@ -1347,9 +2037,14 @@ const HTML = `<!DOCTYPE html>
     });
     const data = await res.json();
     favorites = data.favorites;
+    const faved = favorites.includes(name);
+    if (window.sfx && faved) sfx.favorite();
+    if (faved) termPush([["  ★ ", "yellow"], ["favorited ", "fg"], [name, "accent"]]);
+    else termPush([["  ☆ ", "dim"], ["unfavorited ", "dim"], [name, "dim"]]);
+    if (data.progress) applyProgress(data.progress);
+    achievementToast(data.newlyUnlocked);
     document.getElementById("favorites-count").textContent = favorites.length;
     renderGrid();
-    showToast(favorites.includes(name) ? "★ Favorited " + name : "Unfavorited " + name);
   }
 
   // Install a theme into settings.json; returns the slim scheme (or null) and updates local state.
@@ -1441,14 +2136,18 @@ const HTML = `<!DOCTYPE html>
     document.getElementById("font-size").textContent = currentSize;
   }
 
-  async function toggleShuffle() {
-    shuffleActive = !shuffleActive;
+  function shufflePost(active) {
     const ms = parseInt(document.getElementById("shuffle-interval").value);
-    await fetch("/api/shuffle", {
+    return fetch("/api/shuffle", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ active: shuffleActive, ms, favsOnly: shuffleFavsOnly })
+      body: JSON.stringify({ active: active, ms: ms, favsOnly: shuffleFavsOnly, rareOnly: shuffleRareOnly })
     });
+  }
+
+  async function toggleShuffle() {
+    shuffleActive = !shuffleActive;
+    await shufflePost(shuffleActive);
     document.getElementById("shuffle-btn").classList.toggle("active", shuffleActive);
     showToast(shuffleActive ? "Auto-shuffle ON" : "Auto-shuffle OFF");
   }
@@ -1456,25 +2155,20 @@ const HTML = `<!DOCTYPE html>
   async function toggleFavsOnly() {
     shuffleFavsOnly = !shuffleFavsOnly;
     document.getElementById("favs-only-btn").classList.toggle("active", shuffleFavsOnly);
-    if (shuffleActive) {
-      const ms = parseInt(document.getElementById("shuffle-interval").value);
-      await fetch("/api/shuffle", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ active: true, ms, favsOnly: shuffleFavsOnly })
-      });
-    }
+    if (shuffleActive) await shufflePost(true);
     showToast(shuffleFavsOnly ? "Shuffle: favorites only" : "Shuffle: all themes");
+  }
+
+  async function toggleRareOnly() {
+    shuffleRareOnly = !shuffleRareOnly;
+    document.getElementById("rare-only-btn").classList.toggle("active", shuffleRareOnly);
+    if (shuffleActive) await shufflePost(true);
+    showToast(shuffleRareOnly ? "Shuffle: Rare+ only" : "Shuffle: all tiers");
   }
 
   async function updateShuffle() {
     if (!shuffleActive) return;
-    const ms = parseInt(document.getElementById("shuffle-interval").value);
-    await fetch("/api/shuffle", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ active: true, ms, favsOnly: shuffleFavsOnly })
-    });
+    await shufflePost(true);
   }
 
   function updateOpacity(val) {
@@ -1497,11 +2191,57 @@ const HTML = `<!DOCTYPE html>
     renderGrid();
   }
 
+  function levelFromXp(xp) { return Math.floor((xp || 0) / 100) + 1; }
+
+  function applyProgress(p) {
+    if (!p) return;
+    progress = p;
+    document.getElementById("hud-discovered").textContent = progress.discovered.length;
+    document.getElementById("hud-total").textContent = totalSchemes;
+    document.getElementById("hud-level").textContent = levelFromXp(progress.xp);
+    document.getElementById("hud-xp-val").textContent = progress.xp;
+  }
+
+  function toggleSound() {
+    sfx.setEnabled(!sfx.isEnabled());
+    const btn = document.getElementById("sound-toggle");
+    btn.classList.toggle("muted", !sfx.isEnabled());
+    btn.textContent = sfx.isEnabled() ? "♪" : "♪̶";
+    showToast(sfx.isEnabled() ? "Sound on" : "Sound off");
+  }
+
+  function achievementToast(list) {
+    if (!list || !list.length) return;
+    list.forEach((a, i) => setTimeout(() => {
+      termPush([["  🏆 ", "yellow"], ["unlocked: ", "fg"], [a.label, "accent"]]);
+      if (window.sfx) sfx.achievement();
+    }, i * 1200));
+  }
+
+  // Mark a theme discovered server-side; updates HUD + fires achievement toasts.
+  async function discover(name) {
+    try {
+      const res = await fetch("/api/progress/discover", {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ name })
+      });
+      const data = await res.json();
+      if (data.error) return;
+      applyProgress(data.progress);
+      if (data.isNew) {
+        termPush([["  ◈ ", "cyan"], ["discovered ", "fg"], [data.progress.discovered.length + "/" + totalSchemes, "green"],
+          ["   +10 XP", "yellow"], ["  (LVL " + levelFromXp(data.progress.xp) + ")", "dim"]]);
+      }
+      achievementToast(data.newlyUnlocked);
+    } catch (e) {}
+  }
+
+  // Transient messages slot into the header (the "hidden toast"), then it reverts to the title.
+  // Skipped while the slot machine is mid-spin so a randomize result isn't interrupted.
   function showToast(msg) {
-    const t = document.getElementById("toast");
-    t.textContent = msg;
-    t.classList.add("show");
-    setTimeout(() => t.classList.remove("show"), 1800);
+    if (headerTimer) return;
+    scrambleText(String(msg));
+    revertHeaderSoon();
   }
 
   // Delegated grid clicks (cards rendered as innerHTML carry data-* attributes, no inline JS)
@@ -1518,6 +2258,11 @@ const HTML = `<!DOCTYPE html>
     if (card) pickScheme(card.dataset.name);
   });
 
+  // Windowed rendering: append the next batch as the user nears the bottom of the grid.
+  document.getElementById("scheme-grid").addEventListener("scroll", function () {
+    if (this.scrollTop + this.clientHeight >= this.scrollHeight - 240) appendGridBatch();
+  });
+
   // Poll for shuffle changes (so undo works after an auto-shuffle pick too)
   setInterval(async () => {
     if (!shuffleActive) return;
@@ -1525,6 +2270,7 @@ const HTML = `<!DOCTYPE html>
     const data = await res.json();
     if (data.current !== currentScheme) {
       currentScheme = data.current;
+      discover(currentScheme);
       recordHistory(currentScheme);
       renderPreview();
       renderGrid();
@@ -1551,6 +2297,80 @@ const HTML = `<!DOCTYPE html>
     applyUiTheme(saved);
   })();
 
+  // Browser autoplay policy: audio can only start after a user gesture.
+  function armAudioOnce() {
+    audioArmed = true;
+    sfx.arm();
+    window.removeEventListener("pointerdown", armAudioOnce);
+    window.removeEventListener("keydown", armAudioOnce);
+  }
+  window.addEventListener("pointerdown", armAudioOnce);
+  window.addEventListener("keydown", armAudioOnce);
+  (function () {
+    const btn = document.getElementById("sound-toggle");
+    if (btn) { btn.classList.toggle("muted", !sfx.isEnabled()); btn.textContent = sfx.isEnabled() ? "♪" : "♪̶"; }
+  })();
+
+  document.querySelectorAll(".btn, .tab, .filter-pill").forEach(function (el) {
+    el.addEventListener("pointerenter", function () { if (window.sfx) sfx.hover(); });
+  });
+
+  // Typeable terminal: Enter runs a command, Tab completes theme names, Up/Down recall history.
+  (function () {
+    const input = document.getElementById("term-input");
+    if (!input) return;
+    const cmdHistory = [];
+    let histPos = 0;
+    input.addEventListener("keydown", function (e) {
+      if (e.key === "Enter") {
+        const val = input.value;
+        if (val.trim()) { cmdHistory.push(val); histPos = cmdHistory.length; }
+        input.value = "";
+        runCommand(val);
+      } else if (e.key === "Tab") {
+        e.preventDefault();
+        const mt = input.value.match(/^(apply|use|set) +(.*)$/i);
+        if (mt && mt[2]) {
+          const q = mt[2].toLowerCase();
+          const hit = installedSchemes.find(s => s.name.toLowerCase().startsWith(q))
+            || installedSchemes.find(s => s.name.toLowerCase().includes(q));
+          if (hit) input.value = mt[1].toLowerCase() + " " + hit.name;
+        }
+      } else if (e.key === "ArrowUp" && cmdHistory.length) {
+        e.preventDefault(); histPos = Math.max(0, histPos - 1); input.value = cmdHistory[histPos] || "";
+      } else if (e.key === "ArrowDown" && cmdHistory.length) {
+        e.preventDefault(); histPos = Math.min(cmdHistory.length, histPos + 1); input.value = cmdHistory[histPos] || "";
+      }
+    });
+    // Clicking anywhere in the terminal focuses the command line.
+    const preview = document.getElementById("terminal-preview");
+    if (preview) preview.addEventListener("click", function (e) {
+      if (e.target.tagName !== "INPUT") input.focus();
+    });
+  })();
+
+  (function boot() {
+    const el = document.getElementById("boot");
+    if (!el) return;
+    const reduce = window.matchMedia && window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+    let done = false;
+    try { done = sessionStorage.getItem("terminalizer-booted") === "1"; } catch (e) {}
+    if (reduce || done) { el.classList.add("done"); return; }
+    const lines = ["> SYSTEM ONLINE", "> LOADING SCHEMES ...", "> PALETTE BANKS NOMINAL", "> REACTOR PRIMED"];
+    const box = document.getElementById("boot-lines");
+    box.innerHTML = lines.map(function (l) { return '<div class="bl-line">' + l + '</div>'; }).join("");
+    const nodes = box.querySelectorAll(".bl-line");
+    function finish() {
+      if (el.classList.contains("done")) return;
+      el.classList.add("done");
+      try { sessionStorage.setItem("terminalizer-booted", "1"); } catch (e) {}
+    }
+    nodes.forEach(function (n, i) { setTimeout(function () { n.classList.add("in"); if (window.sfx) sfx.tick(); }, 220 + i * 260); });
+    setTimeout(finish, 220 + nodes.length * 260 + 350);
+    el.addEventListener("click", finish);
+    window.addEventListener("keydown", finish, { once: true });
+  })();
+
   fetchState();
 </script>
 </body>
@@ -1574,7 +2394,8 @@ const server = http.createServer(async (req, res) => {
   }
 
   if (route === "GET /") {
-    res.writeHead(200, { "Content-Type": "text/html" });
+    // no-store so a refresh always gets the current build (the UI ships inside this file)
+    res.writeHead(200, { "Content-Type": "text/html", "Cache-Control": "no-store, must-revalidate" });
     res.end(HTML);
     return;
   }
@@ -1583,15 +2404,21 @@ const server = http.createServer(async (req, res) => {
     lastShuffleActivity = Date.now();
     const settings = readSettings();
     const defaults = getDefaults(settings);
+    const rar = computeRarities(settings.schemes || []);
     json({
-      schemes: (settings.schemes || []).map(slimScheme),
+      schemes: (settings.schemes || []).map((s) => {
+        const slim = slimScheme(s);
+        slim.rarity = rar.get(s.name) || "Common";
+        return slim;
+      }),
       current: getCurrentScheme(settings),
       font: getFont(settings),
       favorites: loadFavorites(),
-      shuffle: { active: !!shuffleInterval, ms: shuffleMs, favsOnly: shuffleFavsOnly },
+      shuffle: { active: !!shuffleInterval, ms: shuffleMs, favsOnly: shuffleFavsOnly, rareOnly: shuffleRareOnly },
       opacity: defaults.opacity ?? 100,
       applyAll: applyAllProfiles,
       overrides: { cursorColor: defaults.cursorColor || null, selectionBackground: defaults.selectionBackground || null },
+      progress: loadProgress(),
     });
     return;
   }
@@ -1643,18 +2470,27 @@ const server = http.createServer(async (req, res) => {
     const { name } = await parseBody(req);
     const favs = loadFavorites();
     const idx = favs.indexOf(name);
+    const added = idx < 0;
     if (idx >= 0) favs.splice(idx, 1);
     else favs.push(name);
     saveFavorites(favs);
-    json({ favorites: favs });
+    const progress = loadProgress();
+    if (added) progress.xp += 5;
+    const newlyUnlocked = evaluateAchievements(progress, {
+      totalSchemes: (readSettings().schemes || []).length,
+      favoritesCount: favs.length,
+      lastTier: null, lastBrightness: null,
+    });
+    saveProgress(progress);
+    json({ favorites: favs, progress, newlyUnlocked });
     return;
   }
 
   if (route === "POST /api/shuffle") {
-    const { active, ms, favsOnly } = await parseBody(req);
-    if (active) startShuffle(ms, favsOnly);
+    const { active, ms, favsOnly, rareOnly } = await parseBody(req);
+    if (active) startShuffle(ms, favsOnly, rareOnly);
     else stopShuffle();
-    json({ active: !!shuffleInterval, ms: shuffleMs, favsOnly: shuffleFavsOnly });
+    json({ active: !!shuffleInterval, ms: shuffleMs, favsOnly: shuffleFavsOnly, rareOnly: shuffleRareOnly });
     return;
   }
 
@@ -1730,6 +2566,33 @@ const server = http.createServer(async (req, res) => {
     return;
   }
 
+  if (route === "GET /api/progress") {
+    json({ progress: loadProgress() });
+    return;
+  }
+
+  if (route === "POST /api/progress/discover") {
+    const { name } = await parseBody(req);
+    const settings = readSettings();
+    const scheme = (settings.schemes || []).find((s) => s.name === name);
+    if (!scheme) { json({ error: "Unknown scheme" }, 400); return; }
+    const progress = loadProgress();
+    const isNew = !progress.discovered.includes(name);
+    if (isNew) { progress.discovered.push(name); progress.xp += 10; }
+    const tier = rarityTier(scheme, settings.schemes);
+    const bg = hexToRgb(scheme.background);
+    const ctx = {
+      totalSchemes: (settings.schemes || []).length,
+      favoritesCount: loadFavorites().length,
+      lastTier: tier,
+      lastBrightness: bg ? rgbBrightness(bg) : null,
+    };
+    const newlyUnlocked = evaluateAchievements(progress, ctx);
+    saveProgress(progress);
+    json({ progress, newlyUnlocked, tier, isNew });
+    return;
+  }
+
   res.writeHead(404);
   res.end("Not found");
 
@@ -1756,18 +2619,34 @@ function openBrowser(url) {
   exec(cmd, () => {}); // ignore errors; the URL is printed regardless
 }
 
-const URL_STR = `http://localhost:${PORT}`;
-server.on("error", (e) => {
-  if (e.code === "EADDRINUSE") {
-    console.error(`Port ${PORT} is already in use — opening ${URL_STR} (it may already be running).`);
-    console.error(`For a separate instance: PORT=8080 the-terminalizer`);
-    openBrowser(URL_STR); // likely our own instance — just open it
-  } else {
-    console.error("Server error:", e.message);
-  }
-  process.exit(1);
-});
-server.listen(PORT, HOST, () => {
-  console.log(`The Terminalizer running at ${URL_STR}`);
-  openBrowser(URL_STR);
-});
+module.exports = {
+  slimScheme,
+  RARITY_TIERS,
+  signature,
+  computeRarities,
+  rarityTier,
+  defaultProgress,
+  loadProgress,
+  saveProgress,
+  levelForXp,
+  ACHIEVEMENTS,
+  evaluateAchievements,
+};
+
+if (require.main === module) {
+  const URL_STR = `http://localhost:${PORT}`;
+  server.on("error", (e) => {
+    if (e.code === "EADDRINUSE") {
+      console.error(`Port ${PORT} is already in use — opening ${URL_STR} (it may already be running).`);
+      console.error(`For a separate instance: PORT=8080 the-terminalizer`);
+      openBrowser(URL_STR); // likely our own instance — just open it
+    } else {
+      console.error("Server error:", e.message);
+    }
+    process.exit(1);
+  });
+  server.listen(PORT, HOST, () => {
+    console.log(`The Terminalizer running at ${URL_STR}`);
+    openBrowser(URL_STR);
+  });
+}

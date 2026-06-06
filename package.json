@@ -1,13 +1,14 @@
 {
   "name": "the-terminalizer",
-  "version": "1.2.1",
-  "description": "Randomize, preview, and hot-swap your Windows Terminal themes. 515+ themes, favorites, auto-shuffle, opacity control.",
+  "version": "1.4.0",
+  "description": "Randomize, preview, and hot-swap your Windows Terminal themes from a typeable cyberpunk dashboard. 515+ themes, true-rarity tiers, casino-slot header, live action terminal, favorites, auto-shuffle.",
   "main": "server.js",
   "bin": {
     "the-terminalizer": "server.js"
   },
   "scripts": {
-    "start": "node server.js"
+    "start": "node server.js",
+    "test": "node --test"
   },
   "keywords": [
     "windows-terminal",
