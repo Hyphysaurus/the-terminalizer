@@ -454,27 +454,31 @@ function applyColorScheme(name) {
 let shuffleInterval = null;
 let shuffleMs = 0;
 let shuffleFavsOnly = false;
+let shuffleRareOnly = false;
 let lastShuffleActivity = 0;
 
-function startShuffle(ms, favsOnly = false) {
+function startShuffle(ms, favsOnly = false, rareOnly = false) {
   stopShuffle();
   shuffleMs = ms;
   shuffleFavsOnly = favsOnly;
+  shuffleRareOnly = rareOnly;
   lastShuffleActivity = Date.now();
   shuffleInterval = setInterval(() => {
     // Auto-stop if the UI has gone quiet (tab closed) so we don't rewrite settings.json forever.
     if (Date.now() - lastShuffleActivity > 60000) { stopShuffle(); return; }
     const settings = readSettings();
     const current = getCurrentScheme(settings);
-    let pool;
+    let pool = settings.schemes || [];
     if (shuffleFavsOnly) {
       const favs = loadFavorites();
-      pool = favs.filter((n) => n !== current && settings.schemes.some((s) => s.name === n));
-    } else {
-      pool = settings.schemes.map((s) => s.name).filter((n) => n !== current);
+      pool = pool.filter((s) => favs.includes(s.name));
     }
-    if (pool.length === 0) return;
-    applyColorScheme(pool[Math.floor(Math.random() * pool.length)]);
+    if (shuffleRareOnly) {
+      pool = pool.filter((s) => ["Rare", "Epic", "Legendary"].includes(rarityTier(s)));
+    }
+    const names = pool.map((s) => s.name).filter((n) => n !== current);
+    if (names.length === 0) return;
+    applyColorScheme(names[Math.floor(Math.random() * names.length)]);
   }, ms);
 }
 
@@ -482,6 +486,7 @@ function stopShuffle() {
   if (shuffleInterval) clearInterval(shuffleInterval);
   shuffleInterval = null;
   shuffleMs = 0;
+  shuffleRareOnly = false;
 }
 
 // --- Parse JSON body ---
@@ -1193,6 +1198,7 @@ const HTML = `<!DOCTYPE html>
         <option value="1800000">30m</option>
       </select>
       <button class="btn btn-secondary" id="favs-only-btn" onclick="toggleFavsOnly()">Favs only</button>
+      <button class="btn btn-secondary" id="rare-only-btn" onclick="toggleRareOnly()" title="Auto-shuffle only Rare, Epic & Legendary themes">Rare+</button>
     </div>
     <div class="font-controls">
       <label>Size</label>
@@ -1241,6 +1247,14 @@ const HTML = `<!DOCTYPE html>
       <button class="filter-pill" data-filter="dark" onclick="setFilter('dark')">Dark</button>
       <button class="filter-pill" data-filter="light" onclick="setFilter('light')">Light</button>
     </div>
+    <select class="shuffle-select" id="rarity-select" onchange="setRarity(this.value)" title="Filter by rarity">
+      <option value="all">All tiers</option>
+      <option value="Common">Common</option>
+      <option value="Uncommon">Uncommon</option>
+      <option value="Rare">Rare</option>
+      <option value="Epic">Epic</option>
+      <option value="Legendary">Legendary</option>
+    </select>
     <select class="shuffle-select" id="sort-select" onchange="setSort(this.value)" title="Sort themes">
       <option value="az">A&ndash;Z</option>
       <option value="brightness">Brightness</option>
@@ -1267,6 +1281,8 @@ const HTML = `<!DOCTYPE html>
   let activeSort = "az";
   let shuffleActive = false;
   let shuffleFavsOnly = false;
+  let shuffleRareOnly = false;
+  let activeRarity = "all";
   let currentOpacity = 95;
   let externalLoaded = false;
   let opacityTimer = null;
@@ -1362,8 +1378,10 @@ const HTML = `<!DOCTYPE html>
   }
 
   function filterSchemes(list) {
-    if (activeFilter === "all") return list;
-    return list.filter(s => activeFilter === "light" ? isLightTheme(s) : !isLightTheme(s));
+    let out = list;
+    if (activeFilter !== "all") out = out.filter(s => activeFilter === "light" ? isLightTheme(s) : !isLightTheme(s));
+    if (activeRarity !== "all") out = out.filter(s => s.rarity === activeRarity);
+    return out;
   }
 
   function setFilter(f) {
@@ -1371,6 +1389,8 @@ const HTML = `<!DOCTYPE html>
     document.querySelectorAll(".filter-pill").forEach(p => p.classList.toggle("active", p.dataset.filter === f));
     renderGrid();
   }
+
+  function setRarity(v) { activeRarity = v; renderGrid(); }
 
   function brightness(s) {
     if (!s || !s.background) return 0;
@@ -1410,6 +1430,7 @@ const HTML = `<!DOCTYPE html>
     favorites = data.favorites;
     shuffleActive = data.shuffle.active;
     shuffleFavsOnly = data.shuffle.favsOnly || false;
+    shuffleRareOnly = data.shuffle.rareOnly || false;
     currentOpacity = data.opacity;
     document.getElementById("installed-count").textContent = installedSchemes.length;
     document.getElementById("favorites-count").textContent = favorites.length;
@@ -1418,6 +1439,7 @@ const HTML = `<!DOCTYPE html>
       document.getElementById("shuffle-interval").value = String(data.shuffle.ms);
     }
     document.getElementById("favs-only-btn").classList.toggle("active", shuffleFavsOnly);
+    document.getElementById("rare-only-btn").classList.toggle("active", shuffleRareOnly);
     document.getElementById("font-size").textContent = currentSize;
     document.getElementById("opacity-slider").value = currentOpacity;
     document.getElementById("opacity-value").textContent = currentOpacity + "%";
@@ -1979,14 +2001,18 @@ const HTML = `<!DOCTYPE html>
     document.getElementById("font-size").textContent = currentSize;
   }
 
-  async function toggleShuffle() {
-    shuffleActive = !shuffleActive;
+  function shufflePost(active) {
     const ms = parseInt(document.getElementById("shuffle-interval").value);
-    await fetch("/api/shuffle", {
+    return fetch("/api/shuffle", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ active: shuffleActive, ms, favsOnly: shuffleFavsOnly })
+      body: JSON.stringify({ active: active, ms: ms, favsOnly: shuffleFavsOnly, rareOnly: shuffleRareOnly })
     });
+  }
+
+  async function toggleShuffle() {
+    shuffleActive = !shuffleActive;
+    await shufflePost(shuffleActive);
     document.getElementById("shuffle-btn").classList.toggle("active", shuffleActive);
     showToast(shuffleActive ? "Auto-shuffle ON" : "Auto-shuffle OFF");
   }
@@ -1994,25 +2020,20 @@ const HTML = `<!DOCTYPE html>
   async function toggleFavsOnly() {
     shuffleFavsOnly = !shuffleFavsOnly;
     document.getElementById("favs-only-btn").classList.toggle("active", shuffleFavsOnly);
-    if (shuffleActive) {
-      const ms = parseInt(document.getElementById("shuffle-interval").value);
-      await fetch("/api/shuffle", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ active: true, ms, favsOnly: shuffleFavsOnly })
-      });
-    }
+    if (shuffleActive) await shufflePost(true);
     showToast(shuffleFavsOnly ? "Shuffle: favorites only" : "Shuffle: all themes");
+  }
+
+  async function toggleRareOnly() {
+    shuffleRareOnly = !shuffleRareOnly;
+    document.getElementById("rare-only-btn").classList.toggle("active", shuffleRareOnly);
+    if (shuffleActive) await shufflePost(true);
+    showToast(shuffleRareOnly ? "Shuffle: Rare+ only" : "Shuffle: all tiers");
   }
 
   async function updateShuffle() {
     if (!shuffleActive) return;
-    const ms = parseInt(document.getElementById("shuffle-interval").value);
-    await fetch("/api/shuffle", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ active: true, ms, favsOnly: shuffleFavsOnly })
-    });
+    await shufflePost(true);
   }
 
   function updateOpacity(val) {
@@ -2223,7 +2244,7 @@ const server = http.createServer(async (req, res) => {
       current: getCurrentScheme(settings),
       font: getFont(settings),
       favorites: loadFavorites(),
-      shuffle: { active: !!shuffleInterval, ms: shuffleMs, favsOnly: shuffleFavsOnly },
+      shuffle: { active: !!shuffleInterval, ms: shuffleMs, favsOnly: shuffleFavsOnly, rareOnly: shuffleRareOnly },
       opacity: defaults.opacity ?? 100,
       applyAll: applyAllProfiles,
       overrides: { cursorColor: defaults.cursorColor || null, selectionBackground: defaults.selectionBackground || null },
@@ -2296,10 +2317,10 @@ const server = http.createServer(async (req, res) => {
   }
 
   if (route === "POST /api/shuffle") {
-    const { active, ms, favsOnly } = await parseBody(req);
-    if (active) startShuffle(ms, favsOnly);
+    const { active, ms, favsOnly, rareOnly } = await parseBody(req);
+    if (active) startShuffle(ms, favsOnly, rareOnly);
     else stopShuffle();
-    json({ active: !!shuffleInterval, ms: shuffleMs, favsOnly: shuffleFavsOnly });
+    json({ active: !!shuffleInterval, ms: shuffleMs, favsOnly: shuffleFavsOnly, rareOnly: shuffleRareOnly });
     return;
   }
 
