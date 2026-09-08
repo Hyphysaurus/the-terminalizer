@@ -19,7 +19,7 @@ Randomize, preview, and hot-swap your Windows Terminal themes from a sleek web U
 - **Apply to all profiles** — change every profile at once, not just the default
 - **Export** — copy the current scheme's JSON to your clipboard
 - **Search, sort & filter** — filter by name, sort by A–Z / brightness / hue, filter dark vs light
-- **Themeable UI** — gold ⇄ chrome "helmet" toggle (remembered across sessions)
+- **Themeable UI** — three neon skins, cycled from the header button: **Grid** (Tron cyan + orange), **Night City** (acid yellow, hard corners), **Outrun** (synthwave magenta). Remembered across sessions
 - **Live action terminal** — the preview is a real, typeable command line. Type `random`, `apply <name>` (Tab-completes), `fav`, `surprise`, `undo`/`redo`, `dark`/`light`, `sound`, `rarity`, `find <q>`, `clear`, `help`; every action decodes in as themed log lines that show the actual `colorScheme` change written to your config
 - **Casino slot header** — Randomize spins the "TERMINALIZER" title like a slot machine, decelerating and locking on the result; transient messages slot into it too
 - **Jackpot** — landing an Epic or Legendary theme triggers a payoff: title burst, glyph confetti, coin chord, and a shake
