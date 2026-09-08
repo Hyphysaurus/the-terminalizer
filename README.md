@@ -2,6 +2,8 @@
 
 Randomize, preview, and hot-swap your Windows Terminal themes from a sleek web UI.
 
+![The Terminalizer — Grid skin with a fan of theme previews](docs/thumbnail.png)
+
 ![The Terminalizer](https://img.shields.io/npm/v/the-terminalizer?style=flat-square&color=bb9af7) ![License](https://img.shields.io/npm/l/the-terminalizer?style=flat-square)
 
 ## Features

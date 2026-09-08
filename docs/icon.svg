@@ -1,0 +1,30 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 256 256" width="256" height="256">
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#0b1e30"/><stop offset="1" stop-color="#03070d"/>
+    </linearGradient>
+    <linearGradient id="cy" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#ffffff"/><stop offset="0.45" stop-color="#d9fbff"/><stop offset="1" stop-color="#6ff0ff"/>
+    </linearGradient>
+    <linearGradient id="trail" x1="0" y1="0" x2="1" y2="0">
+      <stop offset="0" stop-color="#ff7a1a" stop-opacity="0"/><stop offset="0.55" stop-color="#ff7a1a"/><stop offset="0.75" stop-color="#ffd9b8"/><stop offset="1" stop-color="#ff7a1a" stop-opacity="0"/>
+    </linearGradient>
+    <filter id="glow" x="-40%" y="-40%" width="180%" height="180%">
+      <feGaussianBlur stdDeviation="6" result="b"/><feMerge><feMergeNode in="b"/><feMergeNode in="SourceGraphic"/></feMerge>
+    </filter>
+    <filter id="glowSm" x="-40%" y="-40%" width="180%" height="180%">
+      <feGaussianBlur stdDeviation="3" result="b"/><feMerge><feMergeNode in="b"/><feMergeNode in="SourceGraphic"/></feMerge>
+    </filter>
+    <clipPath id="tile"><rect x="8" y="8" width="240" height="240" rx="46"/></clipPath>
+  </defs>
+  <rect x="8" y="8" width="240" height="240" rx="46" fill="url(#bg)"/>
+  <g clip-path="url(#tile)" stroke="#6ff0ff" stroke-opacity="0.16" stroke-width="2">
+    <path d="M8 72H248M8 128H248M8 184H248M72 8V248M128 8V248M184 8V248"/>
+  </g>
+  <rect x="8" y="8" width="240" height="240" rx="46" fill="none" stroke="#6ff0ff" stroke-opacity="0.75" stroke-width="5" filter="url(#glowSm)"/>
+  <!-- prompt chevron -->
+  <path d="M62 78 L128 128 L62 178" fill="none" stroke="url(#cy)" stroke-width="26" stroke-linecap="round" stroke-linejoin="round" filter="url(#glow)"/>
+  <!-- light-cycle trail cursor -->
+  <rect x="128" y="160" width="74" height="18" rx="4" fill="url(#trail)" filter="url(#glow)"/>
+  <rect x="150" y="160" width="52" height="18" rx="4" fill="#ff7a1a" opacity="0.9"/>
+</svg>
