@@ -770,7 +770,7 @@ const HTML = `<!DOCTYPE html>
 
     /* UI skin cycle toggle */
     .ui-toggle {
-      position: absolute; right: 0; top: 0;
+      position: absolute; right: 0; top: 0; z-index: 5; /* above the h1: its filter makes it a stacking context painted later */
       background: var(--surface); border: 1px solid var(--glass-border); color: var(--accent);
       width: 36px; height: 36px; border-radius: 50%; cursor: pointer;
       display: flex; align-items: center; justify-content: center; font-size: 1.05rem;
@@ -1154,6 +1154,22 @@ const HTML = `<!DOCTYPE html>
     @keyframes pyramid-pulse { 0%,100%{ opacity:.4; transform:scale(.85); } 50%{ opacity:1; transform:scale(1.12); } }
     @keyframes spin { to { transform: rotate(360deg); } }
 
+    /* Server-offline banner: shown when a /api call cannot reach the server (its console window was closed) */
+    #offline {
+      position: fixed; left: 50%; top: 14px; transform: translateX(-50%); z-index: 60;
+      display: none; align-items: center; gap: 12px; max-width: min(92vw, 640px);
+      padding: 10px 16px; border-radius: var(--radius);
+      background: var(--surface-2); border: 1px solid var(--accent-alt); color: var(--text-strong);
+      font-size: 0.82rem; line-height: 1.4;
+      box-shadow: 0 0 0 1px rgba(0,0,0,0.5), 0 10px 30px var(--shadow-strong), 0 0 18px var(--accent-alt-soft);
+      -webkit-backdrop-filter: var(--blur); backdrop-filter: var(--blur);
+    }
+    #offline.show { display: flex; }
+    #offline b { color: var(--accent-alt); font-weight: 700; letter-spacing: 0.04em; text-transform: uppercase; font-size: 0.72rem; white-space: nowrap; }
+    #offline button {
+      margin-left: auto; background: var(--accent-bg); border: 1px solid var(--accent); color: var(--text-strong);
+      font: 600 0.72rem 'Inter', system-ui, sans-serif; padding: 5px 10px; border-radius: var(--radius); cursor: pointer;
+    }
     /* Toast */
     /* terminal decode-in glyphs */
     .term-scram { text-shadow: 0 0 6px currentColor; }
@@ -1249,6 +1265,7 @@ const HTML = `<!DOCTYPE html>
   <div class="boot-lines" id="boot-lines"></div>
 </div>
 <div id="confetti" aria-hidden="true"></div>
+<div id="offline" role="alert"><b>Server offline</b><span>The Terminalizer's console window was closed, so nothing here can reach it. Relaunch it from the shortcut, then reload this page.</span><button onclick="location.reload()">Reload</button></div>
 <div class="app">
   <span class="corner tl"></span><span class="corner tr"></span>
   <span class="corner bl"></span><span class="corner br"></span>
@@ -1395,6 +1412,23 @@ const HTML = `<!DOCTYPE html>
 
 
 <script>
+  // Every /api call goes through fetch. If the server is gone (console window closed), fetch rejects
+  // with a network error — surface it once instead of letting each button fail silently.
+  (function () {
+    const realFetch = window.fetch.bind(window);
+    const banner = () => document.getElementById("offline");
+    window.fetch = async function (input, init) {
+      const url = typeof input === "string" ? input : (input && input.url) || "";
+      try {
+        const res = await realFetch(input, init);
+        if (url.startsWith("/api/")) { const b = banner(); if (b) b.classList.remove("show"); }
+        return res;
+      } catch (e) {
+        if (url.startsWith("/api/")) { const b = banner(); if (b) b.classList.add("show"); }
+        throw e;
+      }
+    };
+  })();
   let installedSchemes = [];
   let externalIndex = [];
   let favorites = [];
@@ -2732,6 +2766,15 @@ if (require.main === module) {
       openBrowser(URL_STR); // likely our own instance — just open it
     } else {
       console.error("Server error:", e.message);
+    }
+    // From the desktop shortcut this window would vanish instantly and read as a crash.
+    // When attached to a terminal, hold it open until a key is pressed; scripts/CI are unaffected.
+    if (process.stdin.isTTY && process.stdout.isTTY) {
+      console.error("\nThis window can be closed. Press any key to exit.");
+      try { process.stdin.setRawMode(true); } catch {}
+      process.stdin.resume();
+      process.stdin.once("data", () => process.exit(1));
+      return;
     }
     process.exit(1);
   });
